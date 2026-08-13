@@ -84,6 +84,70 @@ class AOTDDataResilienceTests(unittest.IsolatedAsyncioTestCase):
         rich_log.assert_called_once_with(error, context=context, interaction=interaction)
         standard_log.assert_called_once()
 
+    def test_extracts_album_id_from_localized_spotify_url(self) -> None:
+        album_id = AlbumDoDia.extrair_spotify_album_id(
+            "https://open.spotify.com/intl-pt/album/0RqzuJFJRCuvgRJpPYw3Ml?si=u1kNN1tZQLekg7yCJs_A1g"
+        )
+
+        self.assertEqual(album_id, "0RqzuJFJRCuvgRJpPYw3Ml")
+
+    def test_exact_spotify_album_url_bypasses_text_search(self) -> None:
+        cog = make_cog()
+        spotify = Mock()
+        spotify.album.return_value = {
+            "id": "0RqzuJFJRCuvgRJpPYw3Ml",
+            "name": "EP exato",
+            "artists": [{"id": "artist-id", "name": "Artista exato"}],
+            "total_tracks": 4,
+            "album_type": "single",
+            "external_urls": {
+                "spotify": "https://open.spotify.com/album/0RqzuJFJRCuvgRJpPYw3Ml"
+            },
+            "images": [{"url": "https://i.scdn.co/image/exata"}],
+        }
+        spotify.artist.return_value = {"genres": ["metal"]}
+        spotify.album_tracks.return_value = {
+            "items": [{"duration_ms": 180_000}],
+            "next": None,
+        }
+        cog.get_spotify = Mock(return_value=spotify)
+
+        resultado = cog.buscar_album_spotify_sync(
+            "https://open.spotify.com/intl-pt/album/0RqzuJFJRCuvgRJpPYw3Ml?si=u1kNN1tZQLekg7yCJs_A1g"
+        )
+
+        spotify.album.assert_called_once_with("0RqzuJFJRCuvgRJpPYw3Ml")
+        spotify.search.assert_not_called()
+        self.assertEqual(resultado["nome"], "EP exato")
+        self.assertEqual(resultado["artista"], "Artista exato")
+
+    def test_non_album_spotify_url_never_falls_back_to_text_search(self) -> None:
+        cog = make_cog()
+        spotify = Mock()
+        cog.get_spotify = Mock(return_value=spotify)
+
+        with self.assertRaisesRegex(RuntimeError, "álbum ou EP válido"):
+            cog.buscar_album_spotify_sync(
+                "https://open.spotify.com/track/0RqzuJFJRCuvgRJpPYw3Ml"
+            )
+
+        spotify.search.assert_not_called()
+
+    def test_plain_album_name_still_uses_spotify_search(self) -> None:
+        cog = make_cog()
+        spotify = Mock()
+        spotify.search.return_value = {"albums": {"items": []}}
+        cog.get_spotify = Mock(return_value=spotify)
+
+        resultado = cog.buscar_album_spotify_sync("Nome do álbum")
+
+        self.assertIsNone(resultado)
+        spotify.search.assert_called_once_with(
+            q="Nome do álbum",
+            type="album",
+            limit=1,
+        )
+
 
 class AOTDCommandResilienceTests(unittest.IsolatedAsyncioTestCase):
     async def test_server_config_proxy_invokes_real_aotd_command_callback(self) -> None:

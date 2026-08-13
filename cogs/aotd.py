@@ -988,16 +988,93 @@ class AlbumDoDia(commands.Cog):
             "motivo": None,
         }
 
-    def buscar_album_spotify_sync(self, query: str) -> Optional[dict[str, Any]]:
-        sp = self.get_spotify()
+    @staticmethod
+    def extrair_spotify_album_id(valor: str) -> Optional[str]:
+        texto = str(valor or "").strip()
+        spotify_id_pattern = r"[A-Za-z0-9]{22}"
 
-        resultados = sp.search(q=query, type="album", limit=1)
-        albuns_encontrados = resultados.get("albums", {}).get("items", [])
+        uri_match = re.fullmatch(
+            rf"spotify:album:({spotify_id_pattern})",
+            texto,
+            flags=re.IGNORECASE,
+        )
+        if uri_match:
+            return uri_match.group(1)
 
-        if not albuns_encontrados:
+        if texto.lower().startswith(("open.spotify.com/", "www.open.spotify.com/")):
+            texto = f"https://{texto}"
+
+        try:
+            parsed = urlparse(texto)
+        except ValueError:
             return None
 
-        album = albuns_encontrados[0]
+        if parsed.scheme.lower() not in {"http", "https"}:
+            return None
+
+        if (parsed.hostname or "").lower() not in {
+            "open.spotify.com",
+            "www.open.spotify.com",
+        }:
+            return None
+
+        partes = [parte for parte in parsed.path.split("/") if parte]
+        if len(partes) == 2 and partes[0].lower() == "album":
+            album_id = partes[1]
+        elif (
+            len(partes) == 3
+            and partes[0].lower().startswith("intl-")
+            and partes[1].lower() == "album"
+        ):
+            album_id = partes[2]
+        else:
+            return None
+
+        if re.fullmatch(spotify_id_pattern, album_id):
+            return album_id
+
+        return None
+
+    @staticmethod
+    def parece_localizador_spotify(valor: str) -> bool:
+        texto = str(valor or "").strip()
+        texto_lower = texto.lower()
+
+        if texto_lower.startswith("spotify:"):
+            return True
+
+        if texto_lower.startswith(("open.spotify.com/", "www.open.spotify.com/")):
+            texto = f"https://{texto}"
+
+        try:
+            parsed = urlparse(texto)
+        except ValueError:
+            return False
+
+        return (parsed.hostname or "").lower() in {
+            "open.spotify.com",
+            "www.open.spotify.com",
+        }
+
+    def buscar_album_spotify_sync(self, query: str) -> Optional[dict[str, Any]]:
+        sp = self.get_spotify()
+        spotify_album_id = self.extrair_spotify_album_id(query)
+
+        if spotify_album_id:
+            album = sp.album(spotify_album_id)
+        else:
+            if self.parece_localizador_spotify(query):
+                raise RuntimeError(
+                    "O link do Spotify precisa apontar diretamente para um álbum ou EP válido."
+                )
+
+            resultados = sp.search(q=query, type="album", limit=1)
+            albuns_encontrados = resultados.get("albums", {}).get("items", [])
+
+            if not albuns_encontrados:
+                return None
+
+            album = albuns_encontrados[0]
         artista = album["artists"][0]
 
         total_tracks = album.get("total_tracks", "?")
@@ -1806,7 +1883,7 @@ class AlbumDoDia(commands.Cog):
         description="Sugere um álbum ou EP para a fila do Álbum do Dia.",
     )
     @app_commands.describe(
-        nome_album="Nome do álbum ou EP para buscar no Spotify.",
+        nome_album="Nome ou link exato do álbum/EP no Spotify.",
     )
     async def sugerir(
         self,
@@ -1822,7 +1899,7 @@ class AlbumDoDia(commands.Cog):
             self.log_aotd_exception(
                 exc,
                 interaction=interaction,
-                phase="spotify_configuration",
+                phase="spotify_album_lookup",
                 query=nome_album,
             )
             await interaction.followup.send(f"❌ {exc}", ephemeral=True)
