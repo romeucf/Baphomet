@@ -86,6 +86,30 @@ class AOTDDataResilienceTests(unittest.IsolatedAsyncioTestCase):
 
 
 class AOTDCommandResilienceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_server_config_proxy_invokes_real_aotd_command_callback(self) -> None:
+        group = object.__new__(ServerConfig)
+        aotd = make_cog()
+        aotd.carregar_fila = Mock(return_value=[])
+
+        response = SimpleNamespace(
+            is_done=Mock(return_value=False),
+            defer=AsyncMock(),
+        )
+        followup = SimpleNamespace(send=AsyncMock())
+        interaction = SimpleNamespace(
+            client=SimpleNamespace(get_cog=Mock(return_value=aotd)),
+            response=response,
+            followup=followup,
+        )
+
+        await group._call_cog(interaction, "AlbumDoDia", "listar_fila")
+
+        response.defer.assert_awaited_once_with(ephemeral=True)
+        followup.send.assert_awaited_once_with(
+            "📭 A fila está vazia.",
+            ephemeral=True,
+        )
+
     async def test_unexpected_command_error_is_logged_before_response(self) -> None:
         cog = make_cog()
         cog.log_aotd_exception = Mock(return_value="abc123def456")

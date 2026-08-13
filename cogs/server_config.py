@@ -198,7 +198,16 @@ class ServerConfig(app_commands.Group):
             return
 
         try:
-            await method(interaction, *args, **kwargs)
+            if isinstance(method, app_commands.Command):
+                callback_binding = method.binding or cog
+                await method.callback(
+                    callback_binding,
+                    interaction,
+                    *args,
+                    **kwargs,
+                )
+            else:
+                await method(interaction, *args, **kwargs)
         except Exception as exc:
             aotd_logger = getattr(cog, "log_aotd_exception", None)
             if callable(aotd_logger):
