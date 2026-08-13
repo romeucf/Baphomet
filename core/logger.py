@@ -1,10 +1,7 @@
-import sys
 import traceback
 import discord
 from discord.ext import commands
 from datetime import datetime
-import asyncio
-import io
 
 class Colors:
     RESET = "\033[0m"
@@ -29,15 +26,24 @@ def _clean_traceback(exc: Exception) -> str:
     # Vamos destacar os caminhos que contém "Baphomet" ou o arquivo atual.
     
     for line in tb_lines:
-        if "/discord/" in line or "/asyncio/" in line:
+        normalized_line = line.replace("\\", "/")
+        if "/discord/" in normalized_line or "/asyncio/" in normalized_line:
             clean_tb.append(f"{Colors.DIM}{line}{Colors.RESET}")
-        elif "Baphomet" in line or "cogs/" in line or "main.py" in line:
+        elif "Baphomet" in normalized_line or "cogs/" in normalized_line or "main.py" in normalized_line:
             # Highlight this part
             clean_tb.append(f"{Colors.GREEN}{Colors.BOLD}{line}{Colors.RESET}")
         else:
             clean_tb.append(line)
             
     return "".join(clean_tb)
+
+def _safe_attr(value, attribute: str, default=None):
+    """Lê metadados de objetos do Discord sem deixar o próprio logger falhar."""
+    try:
+        return getattr(value, attribute, default)
+    except Exception:
+        return default
+
 
 def log_exception(exc: Exception, context: str = None, interaction: discord.Interaction = None, ctx: commands.Context = None, args: tuple = None, kwargs: dict = None):
     """
@@ -56,7 +62,8 @@ def log_exception(exc: Exception, context: str = None, interaction: discord.Inte
     while tb is not None:
         frame = tb.tb_frame
         code = frame.f_code
-        if "Baphomet" in code.co_filename or "cogs/" in code.co_filename or "main.py" in code.co_filename:
+        normalized_filename = code.co_filename.replace("\\", "/")
+        if "Baphomet" in normalized_filename or "cogs/" in normalized_filename or "main.py" in normalized_filename:
             location = f"Arquivo: {code.co_filename}, Linha: {tb.tb_lineno}, Função: {code.co_name}"
         tb = tb.tb_next
         
@@ -74,27 +81,36 @@ def log_exception(exc: Exception, context: str = None, interaction: discord.Inte
     
     # 5. Contexto de Interação
     if interaction:
-        user = interaction.user
-        guild = interaction.guild
-        channel = interaction.channel
-        
-        cmd_name = interaction.command.name if interaction.command else "Unknown Command"
+        user = _safe_attr(interaction, "user")
+        guild = _safe_attr(interaction, "guild")
+        channel = _safe_attr(interaction, "channel")
+        command = _safe_attr(interaction, "command")
+        response = _safe_attr(interaction, "response")
+        cmd_name = _safe_attr(command, "qualified_name", None) or _safe_attr(command, "name", "Unknown Command")
+        try:
+            response_done = response.is_done() if response is not None else None
+        except Exception:
+            response_done = "indisponível"
         
         print(f"{Colors.CYAN}{Colors.BOLD}[CONTEXTO DE INTERAÇÃO]{Colors.RESET}")
-        print(f"  {Colors.YELLOW}Usuário:{Colors.RESET} {user.name} (ID: {user.id})")
-        print(f"  {Colors.YELLOW}Guilda:{Colors.RESET} {guild.name if guild else 'None'} (ID: {guild.id if guild else 'None'})")
-        print(f"  {Colors.YELLOW}Canal:{Colors.RESET} {channel.name if getattr(channel, 'name', None) else 'None'} (ID: {channel.id if getattr(channel, 'id', None) else 'None'})")
+        print(f"  {Colors.YELLOW}Interaction ID:{Colors.RESET} {_safe_attr(interaction, 'id', 'None')}")
+        print(f"  {Colors.YELLOW}Usuário:{Colors.RESET} {_safe_attr(user, 'name', 'None')} (ID: {_safe_attr(user, 'id', 'None')})")
+        print(f"  {Colors.YELLOW}Guilda:{Colors.RESET} {_safe_attr(guild, 'name', 'None')} (ID: {_safe_attr(guild, 'id', 'None')})")
+        print(f"  {Colors.YELLOW}Canal:{Colors.RESET} {_safe_attr(channel, 'name', 'None')} (ID: {_safe_attr(channel, 'id', 'None')})")
         print(f"  {Colors.YELLOW}Comando/Interação:{Colors.RESET} /{cmd_name}")
+        print(f"  {Colors.YELLOW}Resposta reconhecida:{Colors.RESET} {response_done}")
+        print(f"  {Colors.YELLOW}Comando marcado como falho:{Colors.RESET} {_safe_attr(interaction, 'command_failed', 'None')}")
         
     elif ctx:
-        user = ctx.author
-        guild = ctx.guild
-        channel = ctx.channel
+        user = _safe_attr(ctx, "author")
+        guild = _safe_attr(ctx, "guild")
+        channel = _safe_attr(ctx, "channel")
         print(f"{Colors.CYAN}{Colors.BOLD}[CONTEXTO DE INTERAÇÃO]{Colors.RESET}")
-        print(f"  {Colors.YELLOW}Usuário:{Colors.RESET} {user.name} (ID: {user.id})")
-        print(f"  {Colors.YELLOW}Guilda:{Colors.RESET} {guild.name if guild else 'None'} (ID: {guild.id if guild else 'None'})")
-        print(f"  {Colors.YELLOW}Canal:{Colors.RESET} {channel.name if getattr(channel, 'name', None) else 'None'} (ID: {channel.id if getattr(channel, 'id', None) else 'None'})")
-        print(f"  {Colors.YELLOW}Comando:{Colors.RESET} {ctx.message.content}")
+        print(f"  {Colors.YELLOW}Usuário:{Colors.RESET} {_safe_attr(user, 'name', 'None')} (ID: {_safe_attr(user, 'id', 'None')})")
+        print(f"  {Colors.YELLOW}Guilda:{Colors.RESET} {_safe_attr(guild, 'name', 'None')} (ID: {_safe_attr(guild, 'id', 'None')})")
+        print(f"  {Colors.YELLOW}Canal:{Colors.RESET} {_safe_attr(channel, 'name', 'None')} (ID: {_safe_attr(channel, 'id', 'None')})")
+        message = _safe_attr(ctx, "message")
+        print(f"  {Colors.YELLOW}Comando:{Colors.RESET} {_safe_attr(message, 'content', 'None')}")
         
     if args or kwargs:
         print(f"{Colors.CYAN}{Colors.BOLD}[ARGUMENTOS]{Colors.RESET} Args: {args} | Kwargs: {kwargs}")

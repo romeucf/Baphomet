@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 import json
+import logging
 import os
 import secrets
 import re
 import sqlite3
+import uuid
 from pathlib import Path
 from typing import Any, Optional
 from urllib.parse import urlparse
@@ -18,6 +20,9 @@ import spotipy
 from spotipy.oauth2 import SpotifyClientCredentials
 from core.logger import log_exception
 
+
+LOGGER = logging.getLogger("Baphomet.AOTD")
+AOTD_GENERIC_ERROR = "❌ Ocorreu um erro ao executar esse comando."
 
 
 # ============================================================
@@ -151,8 +156,41 @@ class AOTDQueueListView(discord.ui.View):
         if self.message:
             try:
                 await self.message.edit(view=self)
-            except (discord.HTTPException, discord.Forbidden, discord.NotFound):
-                pass
+            except (discord.HTTPException, discord.Forbidden, discord.NotFound) as exc:
+                self.cog.log_aotd_exception(
+                    exc,
+                    phase="queue_pagination_timeout_disable",
+                    message_id=getattr(self.message, "id", None),
+                    page=self.current_page + 1,
+                )
+
+    async def on_error(
+        self,
+        interaction: discord.Interaction,
+        error: Exception,
+        item: discord.ui.Item,
+    ) -> None:
+        self.cog.log_aotd_exception(
+            error,
+            interaction=interaction,
+            phase="queue_pagination",
+            item_custom_id=getattr(item, "custom_id", None),
+            page=self.current_page + 1,
+            total_pages=self.total_pages,
+            queue_size=len(self.fila),
+        )
+
+        try:
+            await self.cog.send_error_response(
+                interaction,
+                "❌ Não consegui atualizar a página da fila. O erro foi registrado no console.",
+            )
+        except discord.HTTPException as response_error:
+            self.cog.log_aotd_exception(
+                response_error,
+                interaction=interaction,
+                phase="queue_pagination_error_response",
+            )
 
     def _update_buttons(self) -> None:
         total_pages = self.total_pages
@@ -273,6 +311,75 @@ class AlbumDoDia(commands.Cog):
         self.enviar_album_automatico.cancel()
         self.enviar_recap_automatico.cancel()
 
+    @staticmethod
+    def _safe_interaction_value(interaction: discord.Interaction, attribute: str) -> Any:
+        try:
+            return getattr(interaction, attribute, None)
+        except Exception:
+            return None
+
+    @classmethod
+    def log_aotd_exception(
+        cls,
+        error: BaseException,
+        *,
+        interaction: Optional[discord.Interaction] = None,
+        phase: str,
+        **details: Any,
+    ) -> str:
+        """Registra uma falha do AOTD com dados úteis e um ID correlacionável."""
+        error_id = uuid.uuid4().hex[:12]
+        original = getattr(error, "original", error)
+        command = cls._safe_interaction_value(interaction, "command") if interaction else None
+        user = cls._safe_interaction_value(interaction, "user") if interaction else None
+        guild = cls._safe_interaction_value(interaction, "guild") if interaction else None
+        channel = cls._safe_interaction_value(interaction, "channel") if interaction else None
+        response = cls._safe_interaction_value(interaction, "response") if interaction else None
+
+        try:
+            response_done = response.is_done() if response is not None else None
+        except Exception:
+            response_done = "indisponível"
+
+        diagnostics = {
+            "error_id": error_id,
+            "phase": phase,
+            "exception_type": f"{type(original).__module__}.{type(original).__name__}",
+            "interaction_id": cls._safe_interaction_value(interaction, "id") if interaction else None,
+            "command": getattr(command, "qualified_name", None) or getattr(command, "name", None),
+            "user_id": getattr(user, "id", None),
+            "guild_id": getattr(guild, "id", None),
+            "channel_id": getattr(channel, "id", None),
+            "response_done": response_done,
+            "command_failed": cls._safe_interaction_value(interaction, "command_failed") if interaction else None,
+            "database": str(DB_FILE.resolve()),
+            **details,
+        }
+        context = "AOTD failure | " + " | ".join(
+            f"{key}={value!r}" for key, value in diagnostics.items()
+        )
+
+        if isinstance(original, Exception):
+            log_exception(original, context=context, interaction=interaction)
+            LOGGER.error(
+                context,
+                exc_info=(type(original), original, original.__traceback__),
+            )
+        else:
+            LOGGER.error("%s | exception=%r", context, original)
+
+        return error_id
+
+    @staticmethod
+    async def send_error_response(
+        interaction: discord.Interaction,
+        message: str,
+    ) -> None:
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=True)
+        else:
+            await interaction.response.send_message(message, ephemeral=True)
+
     # ========================================================
     #  Banco de Dados
     # ========================================================
@@ -387,7 +494,11 @@ class AlbumDoDia(commands.Cog):
                             print(f"[AOTD] Fila migrada do JSON: {queue_file.resolve()}")
 
                     except Exception as exc:
-                        log_exception(exc)
+                        self.log_aotd_exception(
+                            exc,
+                            phase="legacy_queue_migration",
+                            source_file=str(queue_file.resolve()),
+                        )
                         print(f"[AOTD] Não consegui migrar a fila antiga: {exc}")
 
             config_file = self.encontrar_primeiro_arquivo_existente(OLD_CONFIG_FILES)
@@ -417,7 +528,11 @@ class AlbumDoDia(commands.Cog):
                         print(f"[AOTD] Config migrada do JSON: {config_file.resolve()}")
 
                 except Exception as exc:
-                    log_exception(exc)
+                    self.log_aotd_exception(
+                        exc,
+                        phase="legacy_config_migration",
+                        source_file=str(config_file.resolve()),
+                    )
                     print(f"[AOTD] Não consegui migrar a config antiga: {exc}")
 
             conn.commit()
@@ -457,7 +572,7 @@ class AlbumDoDia(commands.Cog):
 
             try:
                 value = json.loads(row["value"])
-            except json.JSONDecodeError:
+            except (TypeError, json.JSONDecodeError):
                 value = row["value"]
 
             config[key] = value
@@ -502,7 +617,7 @@ class AlbumDoDia(commands.Cog):
     def row_para_album(row: sqlite3.Row) -> dict[str, Any]:
         try:
             generos = json.loads(row["generos_json"] or "[]")
-        except json.JSONDecodeError:
+        except (TypeError, json.JSONDecodeError):
             generos = []
 
         if not isinstance(generos, list):
@@ -543,6 +658,11 @@ class AlbumDoDia(commands.Cog):
 
         queue_position = AlbumDoDia.proxima_posicao_sync(conn)
 
+        try:
+            duracao_ms = max(0, int(album.get("duracao_ms") or 0))
+        except (TypeError, ValueError, OverflowError):
+            duracao_ms = 0
+
         cursor = conn.execute(
             """
             INSERT INTO album_queue (
@@ -569,7 +689,7 @@ class AlbumDoDia(commands.Cog):
                 album.get("sugerido_por_id"),
                 json.dumps(generos, ensure_ascii=False),
                 album.get("total_faixas"),
-                int(album.get("duracao_ms") or 0),
+                duracao_ms,
             ),
         )
 
@@ -714,9 +834,9 @@ class AlbumDoDia(commands.Cog):
         return len(ids)
 
     def inserir_aotd_history(self, album: dict[str, Any]) -> None:
-        nome = album.get("nome", "Álbum desconhecido")
-        artista = album.get("artista", "Artista desconhecido")
-        imagem = album.get("imagem")
+        nome = self.limitar_texto(album.get("nome") or "Álbum desconhecido", 200)
+        artista = self.limitar_texto(album.get("artista") or "Artista desconhecido", 200)
+        imagem = album.get("imagem") if self.is_valid_url(album.get("imagem")) else None
         
         with self.conectar() as conn:
             conn.execute(
@@ -750,7 +870,16 @@ class AlbumDoDia(commands.Cog):
                 """
             ).fetchall()
             
-        return [dict(row) for row in rows]
+        history = []
+        for row in rows:
+            item = dict(row)
+            item["nome"] = self.limitar_texto(item.get("nome") or "Álbum desconhecido", 200)
+            item["artista"] = self.limitar_texto(item.get("artista") or "Artista desconhecido", 200)
+            if not self.is_valid_url(item.get("imagem")):
+                item["imagem"] = None
+            history.append(item)
+
+        return history
 
     # ========================================================
     #  Spotify
@@ -884,7 +1013,12 @@ class AlbumDoDia(commands.Cog):
             artist_info = sp.artist(artista["id"])
             generos_raw = artist_info.get("genres", []) or []
         except Exception as exc:
-            log_exception(exc)
+            self.log_aotd_exception(
+                exc,
+                phase="spotify_artist_metadata",
+                spotify_artist_id=artista.get("id"),
+                spotify_album_id=album.get("id"),
+            )
             generos_raw = []
 
         generos = generos_raw[:4]
@@ -903,7 +1037,11 @@ class AlbumDoDia(commands.Cog):
                 tracks_page = sp.next(tracks_page) if tracks_page.get("next") else None
 
         except Exception as exc:
-            log_exception(exc)
+            self.log_aotd_exception(
+                exc,
+                phase="spotify_album_tracks",
+                spotify_album_id=album.get("id"),
+            )
             duracao_ms = 0
 
         return {
@@ -939,14 +1077,17 @@ class AlbumDoDia(commands.Cog):
 
     @staticmethod
     def channel_mention(channel_id: Optional[int]) -> str:
-        return f"<#{channel_id}>" if channel_id else "Não configurado"
+        normalized_channel_id = AlbumDoDia.normalize_snowflake(channel_id)
+        return f"<#{normalized_channel_id}>" if normalized_channel_id else "Não configurado"
 
     @staticmethod
     def build_role_ping(role_id: Optional[int]) -> Optional[str]:
-        if not role_id:
+        normalized_role_id = AlbumDoDia.normalize_snowflake(role_id)
+
+        if normalized_role_id is None:
             return None
 
-        return f"<@&{role_id}>"
+        return f"<@&{normalized_role_id}>"
 
     @staticmethod
     def parse_br_time(horario: str) -> Optional[tuple[int, int]]:
@@ -1017,8 +1158,27 @@ class AlbumDoDia(commands.Cog):
         if not isinstance(url, str):
             return False
 
-        parsed = urlparse(url.strip())
-        return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+        try:
+            parsed = urlparse(url.strip())
+            return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+        except ValueError:
+            return False
+
+    @staticmethod
+    def normalize_snowflake(value: Any) -> Optional[int]:
+        try:
+            snowflake = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+        return snowflake if snowflake > 0 else None
+
+    @staticmethod
+    def normalize_nonnegative_int(value: Any) -> int:
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError, OverflowError):
+            return 0
 
     def next_daily_run(self, config: Optional[dict[str, Any]] = None) -> dt.datetime:
         config = config or self.carregar_config()
@@ -1049,32 +1209,41 @@ class AlbumDoDia(commands.Cog):
         return self.next_daily_run(config).date() + dt.timedelta(days=queue_size - 1)
 
     def role_display(self, guild: Optional[discord.Guild], role_id: Optional[int]) -> str:
-        if not role_id:
+        normalized_role_id = self.normalize_snowflake(role_id)
+
+        if normalized_role_id is None:
             return "Não configurado"
 
-        role = guild.get_role(int(role_id)) if guild else None
+        role = guild.get_role(normalized_role_id) if guild else None
 
-        return role.mention if role else f"<@&{role_id}>"
+        return role.mention if role else f"<@&{normalized_role_id}>"
 
     async def resolve_text_channel(
         self,
         channel_id: Optional[int],
     ) -> Optional[discord.abc.Messageable]:
-        if not channel_id:
+        normalized_channel_id = self.normalize_snowflake(channel_id)
+
+        if normalized_channel_id is None:
             return None
 
-        channel = self.bot.get_channel(int(channel_id))
+        channel = self.bot.get_channel(normalized_channel_id)
 
         if channel is not None and hasattr(channel, "send"):
             return channel
 
         try:
-            fetched = await self.bot.fetch_channel(int(channel_id))
+            fetched = await self.bot.fetch_channel(normalized_channel_id)
 
             if hasattr(fetched, "send"):
                 return fetched
 
-        except (discord.HTTPException, discord.Forbidden, discord.NotFound):
+        except (discord.HTTPException, discord.Forbidden, discord.NotFound) as exc:
+            self.log_aotd_exception(
+                exc,
+                phase="channel_resolution",
+                configured_channel_id=normalized_channel_id,
+            )
             return None
 
         return None
@@ -1124,15 +1293,18 @@ class AlbumDoDia(commands.Cog):
     # ========================================================
 
     def criar_embed_album(self, album: dict[str, Any]) -> discord.Embed:
-        nome = album.get("nome", "Álbum desconhecido")
-        artista = album.get("artista", "Artista desconhecido")
-        url = album.get("url") or None
+        nome = self.limitar_texto(album.get("nome") or "Álbum desconhecido", 200)
+        artista = self.limitar_texto(album.get("artista") or "Artista desconhecido", 200)
+        url = album.get("url") if self.is_valid_url(album.get("url")) else None
         imagem = album.get("imagem")
 
-        minutos = int(album.get("duracao_ms") or 0) // 60000
-        segundos = (int(album.get("duracao_ms") or 0) % 60000) // 1000
+        duracao_ms = self.normalize_nonnegative_int(album.get("duracao_ms"))
+        minutos = duracao_ms // 60000
+        segundos = (duracao_ms % 60000) // 1000
 
         generos = album.get("generos") or []
+        if not isinstance(generos, list):
+            generos = []
         total_faixas = album.get("total_faixas", "?")
 
         footer_parts = [
@@ -1140,7 +1312,7 @@ class AlbumDoDia(commands.Cog):
         ]
 
         if generos:
-            footer_parts.append("🎸 " + ", ".join(str(g) for g in generos[:4]))
+            footer_parts.append("🎸 " + self.limitar_texto(", ".join(str(g) for g in generos[:4]), 500))
 
         embed = discord.Embed(
             title=f"🎧 {nome}",
@@ -1155,7 +1327,7 @@ class AlbumDoDia(commands.Cog):
             url=url,
         )
 
-        if imagem:
+        if self.is_valid_url(imagem):
             embed.set_image(url=imagem)
 
         embed.set_footer(text=" | ".join(footer_parts))
@@ -1255,17 +1427,20 @@ class AlbumDoDia(commands.Cog):
         interaction: discord.Interaction,
         posicao_fila: int,
     ) -> discord.Embed:
-        nome = album.get("nome", "Álbum desconhecido")
-        artista = album.get("artista", "Artista desconhecido")
-        url = album.get("url") or None
+        nome = self.limitar_texto(album.get("nome") or "Álbum desconhecido", 900)
+        artista = self.limitar_texto(album.get("artista") or "Artista desconhecido", 900)
+        url = album.get("url") if self.is_valid_url(album.get("url")) else None
         imagem = album.get("imagem")
 
-        minutos = int(album.get("duracao_ms") or 0) // 60000
-        segundos = (int(album.get("duracao_ms") or 0) % 60000) // 1000
+        duracao_ms = self.normalize_nonnegative_int(album.get("duracao_ms"))
+        minutos = duracao_ms // 60000
+        segundos = (duracao_ms % 60000) // 1000
 
         generos = album.get("generos") or []
+        if not isinstance(generos, list):
+            generos = []
         generos_txt = (
-            ", ".join(str(g) for g in generos[:4])
+            self.limitar_texto(", ".join(str(g) for g in generos[:4]), 1000)
             if generos
             else "Sem gêneros encontrados"
         )
@@ -1291,7 +1466,7 @@ class AlbumDoDia(commands.Cog):
         embed.add_field(name="Faixas", value=str(album.get("total_faixas", "?")), inline=True)
         embed.add_field(name="Gêneros", value=generos_txt, inline=False)
 
-        if imagem:
+        if self.is_valid_url(imagem):
             embed.set_thumbnail(url=imagem)
 
         embed.set_footer(
@@ -1301,10 +1476,10 @@ class AlbumDoDia(commands.Cog):
         return embed
 
     def criar_embed_single_bloqueado(self, album: dict[str, Any]) -> discord.Embed:
-        nome = album.get("nome", "Lançamento desconhecido")
-        artista = album.get("artista", "Artista desconhecido")
+        nome = self.limitar_texto(album.get("nome") or "Lançamento desconhecido", 900)
+        artista = self.limitar_texto(album.get("artista") or "Artista desconhecido", 900)
         imagem = album.get("imagem")
-        url = album.get("url") or None
+        url = album.get("url") if self.is_valid_url(album.get("url")) else None
         motivo = album.get("motivo_bloqueio") or (
             "Esse lançamento não pode entrar na fila."
         )
@@ -1332,7 +1507,7 @@ class AlbumDoDia(commands.Cog):
             inline=True,
         )
 
-        if imagem:
+        if self.is_valid_url(imagem):
             embed.set_thumbnail(url=imagem)
 
         return embed
@@ -1375,7 +1550,16 @@ class AlbumDoDia(commands.Cog):
                 allowed_mentions=discord.AllowedMentions(roles=True),
             )
 
-        except (discord.HTTPException, discord.Forbidden):
+        except (discord.HTTPException, discord.Forbidden) as exc:
+            self.log_aotd_exception(
+                exc,
+                interaction=interaction,
+                phase="staff_notification_send",
+                staff_channel_id=staff_channel_id,
+                staff_role_id=staff_role_id,
+                queue_position=posicao_fila,
+                album_url=album.get("url"),
+            )
             return
 
     # ========================================================
@@ -1416,7 +1600,15 @@ class AlbumDoDia(commands.Cog):
         for emoji in (EMOJI_GOSTO, EMOJI_NAO_GOSTO, EMOJI_NUNCA_OUVI):
             try:
                 await msg.add_reaction(emoji)
-            except (discord.HTTPException, discord.Forbidden, TypeError):
+            except (discord.HTTPException, discord.Forbidden, TypeError) as exc:
+                self.log_aotd_exception(
+                    exc,
+                    interaction=destino if isinstance(destino, discord.Interaction) else None,
+                    phase="album_reaction_add",
+                    message_id=getattr(msg, "id", None),
+                    emoji=emoji,
+                    queue_id=album_de_hoje.get("_queue_id"),
+                )
                 continue
 
         try:
@@ -1434,10 +1626,27 @@ class AlbumDoDia(commands.Cog):
                     f"✨ Sugerido por: {album_de_hoje.get('sugerido_por', 'Comunidade')}"
                 )
 
-        except (discord.HTTPException, discord.Forbidden):
-            pass
+        except (discord.HTTPException, discord.Forbidden) as exc:
+            self.log_aotd_exception(
+                exc,
+                interaction=destino if isinstance(destino, discord.Interaction) else None,
+                phase="album_thread_create_or_send",
+                message_id=getattr(msg, "id", None),
+                queue_id=album_de_hoje.get("_queue_id"),
+            )
 
-        self.inserir_aotd_history(album_de_hoje)
+        try:
+            self.inserir_aotd_history(album_de_hoje)
+        except Exception as exc:
+            # O álbum já foi publicado e removido da fila. Falhar o comando neste
+            # ponto induziria uma repetição enganosa e não recuperaria o histórico.
+            self.log_aotd_exception(
+                exc,
+                interaction=destino if isinstance(destino, discord.Interaction) else None,
+                phase="album_history_after_successful_dispatch",
+                message_id=getattr(msg, "id", None),
+                queue_id=album_de_hoje.get("_queue_id"),
+            )
 
         return True
 
@@ -1473,8 +1682,12 @@ class AlbumDoDia(commands.Cog):
         try:
             enviado = await self.despachar_album(channel)
         except Exception as exc:
-            log_exception(exc)
-            print(f"[AOTD] Erro no envio automático: {exc}")
+            self.log_aotd_exception(
+                exc,
+                phase="automatic_album_dispatch",
+                album_channel_id=config.get("album_channel_id"),
+                scheduled_date=today_key,
+            )
             return
 
         if enviado:
@@ -1485,6 +1698,10 @@ class AlbumDoDia(commands.Cog):
     @enviar_album_automatico.before_loop
     async def before_enviar_album_automatico(self) -> None:
         await self.bot.wait_until_ready()
+
+    @enviar_album_automatico.error
+    async def enviar_album_automatico_error(self, error: BaseException) -> None:
+        self.log_aotd_exception(error, phase="automatic_album_loop")
 
     async def send_aotd_recap(self, is_test: bool = False) -> bool:
         config = self.carregar_config()
@@ -1504,7 +1721,11 @@ class AlbumDoDia(commands.Cog):
         from modules.movies.recap_logic import generate_recap_collage, build_recap_embed
         import discord
         
-        urls = [item.get("imagem") for item in history if item.get("imagem")]
+        urls = [
+            item["imagem"]
+            for item in history
+            if self.is_valid_url(item.get("imagem"))
+        ]
         buffer = await generate_recap_collage(urls)
         
         embed, emojis = build_recap_embed(history, system_type="AOTD")
@@ -1520,10 +1741,23 @@ class AlbumDoDia(commands.Cog):
             for emoji in emojis:
                 try:
                     await msg.add_reaction(emoji)
-                except discord.HTTPException:
-                    pass
+                except discord.HTTPException as exc:
+                    self.log_aotd_exception(
+                        exc,
+                        phase="recap_reaction_add",
+                        message_id=getattr(msg, "id", None),
+                        emoji=emoji,
+                        is_test=is_test,
+                    )
             return True
-        except discord.Forbidden:
+        except discord.Forbidden as exc:
+            self.log_aotd_exception(
+                exc,
+                phase="recap_send_forbidden",
+                album_channel_id=config.get("album_channel_id"),
+                is_test=is_test,
+                history_size=len(history),
+            )
             return False
 
     @tasks.loop(minutes=1)
@@ -1559,6 +1793,10 @@ class AlbumDoDia(commands.Cog):
     async def before_enviar_recap_automatico(self) -> None:
         await self.bot.wait_until_ready()
 
+    @enviar_recap_automatico.error
+    async def enviar_recap_automatico_error(self, error: BaseException) -> None:
+        self.log_aotd_exception(error, phase="automatic_recap_loop")
+
     # ========================================================
     #  Slash Commands — Usuários
     # ========================================================
@@ -1581,11 +1819,22 @@ class AlbumDoDia(commands.Cog):
             album_info = await self.buscar_album_spotify(nome_album)
 
         except RuntimeError as exc:
+            self.log_aotd_exception(
+                exc,
+                interaction=interaction,
+                phase="spotify_configuration",
+                query=nome_album,
+            )
             await interaction.followup.send(f"❌ {exc}", ephemeral=True)
             return
 
         except Exception as exc:
-            log_exception(exc)
+            self.log_aotd_exception(
+                exc,
+                interaction=interaction,
+                phase="spotify_album_search",
+                query=nome_album,
+            )
             await interaction.followup.send(
                 "❌ Não consegui consultar o Spotify agora. Tenta de novo daqui a pouco.",
                 ephemeral=True,
@@ -1618,30 +1867,44 @@ class AlbumDoDia(commands.Cog):
 
         posicao_fila = self.adicionar_album_na_fila(album_info)
 
-        tipo = album_info.get("tipo_lancamento") or "Álbum/EP"
+        tipo = self.limitar_texto(album_info.get("tipo_lancamento") or "Álbum/EP", 100)
+        nome = self.limitar_texto(album_info.get("nome") or "Álbum desconhecido", 900)
+        artista = self.limitar_texto(album_info.get("artista") or "Artista desconhecido", 900)
+        album_url = album_info.get("url") if self.is_valid_url(album_info.get("url")) else None
 
         embed = discord.Embed(
             title="🎵 Álbum adicionado à fila!",
             description=(
-                f"**{album_info['nome']}** — {album_info['artista']}\n\n"
+                f"**{nome}** — {artista}\n\n"
                 f"🏷️ Formato: **{tipo}**\n"
                 f"📌 Posição na fila: **#{posicao_fila}**\n"
                 f"Use `/aotd fila` para ver o tamanho da fila."
             ),
             color=discord.Color.green(),
-            url=album_info.get("url") or None,
+            url=album_url,
         )
 
-        if album_info.get("imagem"):
+        if self.is_valid_url(album_info.get("imagem")):
             embed.set_thumbnail(url=album_info["imagem"])
 
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-        await self.notificar_staff_nova_sugestao(
-            interaction=interaction,
-            album=album_info,
-            posicao_fila=posicao_fila,
-        )
+        try:
+            await self.notificar_staff_nova_sugestao(
+                interaction=interaction,
+                album=album_info,
+                posicao_fila=posicao_fila,
+            )
+        except Exception as exc:
+            # A sugestão e a confirmação ao usuário já foram concluídas. A
+            # notificação interna é auxiliar e não deve transformar sucesso em erro.
+            self.log_aotd_exception(
+                exc,
+                interaction=interaction,
+                phase="staff_notification_after_successful_suggestion",
+                queue_position=posicao_fila,
+                album_url=album_info.get("url"),
+            )
 
     @aotd.command(
         name="fila",
@@ -2158,15 +2421,35 @@ class AlbumDoDia(commands.Cog):
         interaction: discord.Interaction,
         error: app_commands.AppCommandError,
     ) -> None:
+        original = getattr(error, "original", error)
+
         if isinstance(error, app_commands.MissingPermissions):
             msg = "🚫 Você precisa ser administrador para usar esse comando."
+        elif isinstance(error, app_commands.BotMissingPermissions):
+            missing = ", ".join(error.missing_permissions)
+            msg = f"🔧 Estou sem as permissões necessárias: {missing}."
+        elif isinstance(error, app_commands.CommandOnCooldown):
+            msg = f"⏳ Aguarde {error.retry_after:.1f}s antes de usar esse comando novamente."
+        elif isinstance(error, app_commands.NoPrivateMessage):
+            msg = "🚫 Esse comando só pode ser usado dentro de um servidor."
         else:
-            msg = "❌ Ocorreu um erro ao executar esse comando."
+            error_id = self.log_aotd_exception(
+                original,
+                interaction=interaction,
+                phase="app_command_error",
+                wrapper_type=f"{type(error).__module__}.{type(error).__name__}",
+            )
+            msg = f"{AOTD_GENERIC_ERROR} O erro foi registrado no console (ID `{error_id}`)."
 
-        if interaction.response.is_done():
-            await interaction.followup.send(msg, ephemeral=True)
-        else:
-            await interaction.response.send_message(msg, ephemeral=True)
+        try:
+            await self.send_error_response(interaction, msg)
+        except discord.HTTPException as response_error:
+            self.log_aotd_exception(
+                response_error,
+                interaction=interaction,
+                phase="app_command_error_response",
+                original_exception_type=f"{type(original).__module__}.{type(original).__name__}",
+            )
 
 
 async def setup(bot: commands.Bot) -> None:
