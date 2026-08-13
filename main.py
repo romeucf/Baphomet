@@ -5,6 +5,7 @@ import platform
 import sys
 import time
 import traceback
+import uuid
 
 import discord
 from discord import app_commands
@@ -326,18 +327,37 @@ async def on_tree_error(
     elif isinstance(error, app_commands.NoPrivateMessage):
         msg = "Esse comando só pode ser usado dentro de um servidor."
     else:
-        msg = "Falha Cataclísmica: O sistema não pôde computar sua requisição."
-        
         # Desempacota o erro original se existir na árvore de comandos do Discord
         original_error = getattr(error, 'original', error)
-        log_exception(original_error, context="Global Slash Command Error", interaction=interaction)
+        error_id = uuid.uuid4().hex[:12]
+        msg = (
+            "Falha Cataclísmica: O sistema não pôde computar sua requisição. "
+            f"ID do erro: `{error_id}`."
+        )
+        log_exception(
+            original_error,
+            context=(
+                "Global Slash Command Error | "
+                f"error_id={error_id!r} | "
+                f"wrapper_type={type(error).__module__}.{type(error).__name__}"
+            ),
+            interaction=interaction,
+        )
 
     try:
         if interaction.response.is_done():
             await interaction.followup.send(msg, ephemeral=True)
         else:
             await interaction.response.send_message(msg, ephemeral=True)
-    except discord.HTTPException:
+    except discord.HTTPException as response_error:
+        log_exception(
+            response_error,
+            context=(
+                "Global Slash Command Error Response | "
+                f"original_type={type(getattr(error, 'original', error)).__name__}"
+            ),
+            interaction=interaction,
+        )
         log_warn("Não foi possível enviar resposta de erro ao usuário (interação expirada?).")
 
 # ==============================================================================

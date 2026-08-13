@@ -197,7 +197,21 @@ class ServerConfig(app_commands.Group):
             await self._send_module_unavailable(interaction)
             return
 
-        await method(interaction, *args, **kwargs)
+        try:
+            await method(interaction, *args, **kwargs)
+        except Exception as exc:
+            aotd_logger = getattr(cog, "log_aotd_exception", None)
+            if callable(aotd_logger):
+                aotd_logger(
+                    exc,
+                    interaction=interaction,
+                    phase="server_config_proxy",
+                    proxy_cog=cog_name,
+                    proxy_method=method_name,
+                    positional_arg_types=[type(arg).__name__ for arg in args],
+                    keyword_arg_names=sorted(kwargs),
+                )
+            raise
 
     async def _call_whitelist_group(
         self,
