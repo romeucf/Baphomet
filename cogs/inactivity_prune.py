@@ -1,4 +1,4 @@
-﻿"""Sistema de Prune por Inatividade Textual — Seguro, Persistente e à Prova de Desastres."""
+"""Sistema de Prune por Inatividade Textual — Seguro, Persistente e à Prova de Desastres."""
 
 from __future__ import annotations
 
@@ -90,12 +90,12 @@ class ActivityRepository:
     async def add_whitelist(self, guild_id: int, target_id: int, target_type: str) -> bool:
         """Adiciona um user ou role à whitelist. Retorna True se inserido."""
         try:
-            await self.conn.execute(
+            cur = await self.conn.execute(
                 "INSERT OR IGNORE INTO prune_whitelist (guild_id, target_id, target_type) VALUES (?, ?, ?)",
                 (guild_id, target_id, target_type),
             )
             await self.conn.commit()
-            return self.conn.total_changes > 0
+            return cur.rowcount > 0
         except Exception as exc:
             log_exception(exc)
             return False

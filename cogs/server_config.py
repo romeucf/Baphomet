@@ -236,12 +236,16 @@ class ServerConfig(app_commands.Group):
             await self._send_module_unavailable(interaction)
             return
 
-        method = getattr(WhitelistGroup(cog), method_name, None)
+        group = WhitelistGroup(cog)
+        method = getattr(group, method_name, None)
         if method is None:
             await self._send_module_unavailable(interaction)
             return
 
-        await method(interaction, *args, **kwargs)
+        if isinstance(method, app_commands.Command):
+            await method.callback(group, interaction, *args, **kwargs)
+        else:
+            await method(interaction, *args, **kwargs)
 
     @welcome_group.command(name="setup", description="[Admin] Configura o canal e o embed de boas-vindas.")
     @app_commands.checks.has_permissions(administrator=True)
