@@ -13,8 +13,9 @@ import math
 import pathlib
 import re
 import sqlite3
+import time
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime, time as dt_time, timedelta, timezone
 from enum import Enum
 from typing import Iterable, Literal
 
@@ -25,19 +26,16 @@ from discord.ext import commands, tasks
 
 from modules.vinculos.rendering.renderer import VINCULO_CARD_FILENAME, VinculoCardRenderer
 from core.logger import log_exception
-
+from core.paths import DATA_DIR
 
 
 LOGGER = logging.getLogger("baphomet.vinculos")
 
-DATA_DIR = pathlib.Path("data")
-DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "baphomet_xp.sqlite3"
 
 REQUEST_TIMEOUT_SECONDS = 120
 REQUEST_COOLDOWN_SECONDS = 15
 MIN_COMMON_INTEREST_ROLES = 2
-XP_BONUS_PER_VINCULO = 0.1
 DEFAULT_BOND_TYPE = "pacto_sangue"
 DEFAULT_AFFINITY_LEVEL_2_DAYS = 7
 DEFAULT_AFFINITY_LEVEL_3_DAYS = 60
@@ -69,10 +67,6 @@ class VinculoType(str, Enum):
     PACTO_SANGUE = "pacto_sangue"
     FIO_RIVALIDADE = "fio_rivalidade"
     PACTO_SERVIDAO = "pacto_servidao"
-
-class ContractType(str, Enum):
-    MESSAGES_SHARED = "MESSAGES_SHARED"
-    XP_DONATION = "XP_DONATION"
 
 
 @dataclass(frozen=True, slots=True)
@@ -615,20 +609,6 @@ class VinculoRepository:
 
             CREATE INDEX IF NOT EXISTS idx_vinculo_request_log_user_time
                 ON vinculo_request_log(guild_id, requester_id, created_at DESC);
-
-            CREATE TABLE IF NOT EXISTS vinculo_contracts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                vinculo_id INTEGER NOT NULL,
-                contract_type TEXT NOT NULL,
-                target_value INTEGER NOT NULL,
-                current_value INTEGER NOT NULL DEFAULT 0,
-                expires_at TEXT NOT NULL,
-                status TEXT NOT NULL DEFAULT 'active',
-                FOREIGN KEY(vinculo_id) REFERENCES vinculos(id)
-            );
-
-            CREATE INDEX IF NOT EXISTS idx_active_contracts
-                ON vinculo_contracts (vinculo_id, status);
             """
         )
         await self._ensure_column("vinculos", "bond_type TEXT NOT NULL DEFAULT 'pacto_sangue'", "bond_type")
@@ -1110,18 +1090,6 @@ class VinculoRepository:
             (guild_id, user_id, user_id),
         )
         return [self._row_to_vinculo(row) for row in rows]
-
-    async def get_all_active_vinculos(self) -> list[ActiveVinculo]:
-        """Retorna todos os vínculos ativos de todas as guildas para rotinas globais (como aniversários)."""
-        async with self._tx_lock:
-            async with self.connection.execute(
-                """
-                SELECT id, guild_id, user_low_id, user_high_id, bond_type, created_at, ended_at, active, last_announced_affinity_level, is_fused
-                FROM vinculos
-                WHERE active = 1
-                """
-            ) as cursor:
-                return [self._row_to_vinculo(row) for row in await cursor.fetchall()]
 
     async def get_anniversary_candidates(
         self,
@@ -2089,13 +2057,13 @@ class VinculoRequestView(discord.ui.View):
 
 class VinculosCog(commands.Cog):
     vinculo = app_commands.Group(name="vinculo", description="Pactos, fios e bônus de XP entre usuários.")
-    vinculo_config = app_commands.Group(name="vinculo_config", description="Configura interesses e parâmetros do altar.", default_permissions=discord.Permissions(administrator=True))
 
     def __init__(self, bot: commands.Bot, repository: VinculoRepository) -> None:
         self.bot = bot
         self.repository = repository
         self.vinculo_card_renderer = VinculoCardRenderer()
         self._request_cooldowns: dict[tuple[int, int], datetime] = {}
+        self._last_activity_write: dict[tuple[int, int], float] = {}
 
     async def cog_load(self) -> None:
         self.repository.bot = self.bot
@@ -2105,11 +2073,9 @@ class VinculosCog(commands.Cog):
         if xp_service is not None:
             xp_service.vinculos_provider = self.repository
         self.check_vinculo_anniversaries.start()
-        self.contract_reaper_task.start()
 
     def cog_unload(self) -> None:
         self.check_vinculo_anniversaries.cancel()
-        self.contract_reaper_task.cancel()
         xp_service = getattr(self.bot, "xp_service", None)
         if xp_service is not None and getattr(xp_service, "vinculos_provider", None) is self.repository:
             xp_service.vinculos_provider = None
@@ -2117,24 +2083,7 @@ class VinculosCog(commands.Cog):
             self.bot.vinculos_runtime = None
         self.bot.loop.create_task(self.repository.close())
 
-    @tasks.loop(minutes=30)
-    async def contract_reaper_task(self) -> None:
-        """Saneamento Cíclico (Garbage Collection) de Contratos."""
-        try:
-            now_iso = datetime.now(timezone.utc).isoformat()
-            async with self.repository._tx_lock:
-                cursor = await self.repository.connection.execute(
-                    "UPDATE vinculo_contracts SET status = 'failed' WHERE status = 'active' AND expires_at < ?",
-                    (now_iso,)
-                )
-                await self.repository.connection.commit()
-                if cursor.rowcount > 0:
-                    LOGGER.debug("[Contract Reaper] %d contratos foram obliterados pela inércia dos mortais.", cursor.rowcount)
-        except Exception as e:
-            log_exception(e)
-            LOGGER.error("Falha intransponível no contract_reaper_task: %s", e, exc_info=True)
-
-    @tasks.loop(time=time(hour=15, minute=0, tzinfo=timezone.utc))
+    @tasks.loop(time=dt_time(hour=15, minute=0, tzinfo=timezone.utc))
     async def check_vinculo_anniversaries(self) -> None:
         """Executa todos os dias às 12:00 BRT para anunciar aniversários de meses/anos de vínculo."""
         now = datetime.now(timezone.utc)
@@ -2915,11 +2864,6 @@ class VinculosCog(commands.Cog):
         )
         await self._send_embed(interaction, embed)
 
-    @vinculo_config.command(name="adicionar", description="Registra um cargo como interesse de vínculo.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
-    @app_commands.describe(cargo="Cargo que passará a contar como interesse")
     async def config_adicionar(self, interaction: discord.Interaction, cargo: discord.Role) -> None:
         if interaction.guild is None:
             await self._send_text(interaction, "🕯️ Este ritual só existe dentro de um servidor.")
@@ -2933,11 +2877,6 @@ class VinculosCog(commands.Cog):
             return
         await self._send_text(interaction, f"📜 Interesse registrado no grimório: {cargo.mention}.")
 
-    @vinculo_config.command(name="remover", description="Remove um cargo da lista de interesses.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
-    @app_commands.describe(cargo="Cargo que deixará de contar como interesse")
     async def config_remover(self, interaction: discord.Interaction, cargo: discord.Role) -> None:
         if interaction.guild is None:
             await self._send_text(interaction, "🕯️ Este ritual só existe dentro de um servidor.")
@@ -2948,10 +2887,6 @@ class VinculosCog(commands.Cog):
             return
         await self._send_text(interaction, f"🕯️ Interesse removido do grimório: {cargo.mention}.")
 
-    @vinculo_config.command(name="listar", description="Lista os cargos configurados como interesses.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
     async def config_listar(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             await self._send_text(interaction, "🕯️ Este ritual só existe dentro de um servidor.")
@@ -2961,10 +2896,6 @@ class VinculosCog(commands.Cog):
         embed.description = self._format_role_ids(interaction.guild, role_ids) if role_ids else "Nenhum cargo de interesse configurado ainda."
         await self._send_embed(interaction, embed)
 
-    @vinculo_config.command(name="limpar", description="Remove todos os cargos configurados como interesses.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
     async def config_limpar(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             await self._send_text(interaction, "🕯️ Este ritual só existe dentro de um servidor.")
@@ -2972,11 +2903,6 @@ class VinculosCog(commands.Cog):
         removed = await self.repository.clear_interest_roles(interaction.guild.id)
         await self._send_text(interaction, f"⚰️ O grimório foi limpo. **{removed}** interesse(s) foram apagados deste servidor.")
 
-    @vinculo_config.command(name="canal-fofoca", description="Define o canal público dos anúncios de vínculos.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
-    @app_commands.describe(canal="Canal que receberá anúncios; vazio desativa")
     async def config_canal_fofoca(self, interaction: discord.Interaction, canal: discord.TextChannel | None = None) -> None:
         if interaction.guild is None:
             await self._send_text(interaction, "🕯️ Este ritual só existe dentro de um servidor.")
@@ -2987,14 +2913,6 @@ class VinculosCog(commands.Cog):
             return
         await self._send_text(interaction, f"📣 O altar agora sussurra em <#{settings.gossip_channel_id}>.")
 
-    @vinculo_config.command(name="testar-card", description="Gera uma prévia do card visual de vínculo.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
-    @app_commands.describe(
-        solicitante="Membro que aparece como quem pediu o vínculo",
-        aceitante="Membro que aparece como quem aceitou o vínculo",
-    )
     async def config_testar_card(
         self,
         interaction: discord.Interaction,
@@ -3041,10 +2959,6 @@ class VinculosCog(commands.Cog):
                 ephemeral=True,
             )
 
-    @vinculo_config.command(name="afinidade", description="Configura os dias necessários para afinidade 2 e 3.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
     async def config_afinidade(
         self,
         interaction: discord.Interaction,
@@ -3064,10 +2978,6 @@ class VinculosCog(commands.Cog):
             ),
         )
 
-    @vinculo_config.command(name="maldicao", description="Configura a maldição de ruptura.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
     async def config_maldicao(
         self,
         interaction: discord.Interaction,
@@ -3083,10 +2993,6 @@ class VinculosCog(commands.Cog):
             f"🩸 Ruptura configurada: **{settings.rupture_penalty_delta:.2f}x** por **{settings.rupture_penalty_hours}h**.",
         )
 
-    @vinculo_config.command(name="doacao", description="Configura a taxa das doações de XP entre parceiros.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
     async def config_doacao(
         self,
         interaction: discord.Interaction,
@@ -3098,10 +3004,6 @@ class VinculosCog(commands.Cog):
         settings = await self.repository.update_transfer_settings(interaction.guild.id, taxa_percent)
         await self._send_text(interaction, f"🪙 Taxa de doação configurada em **{settings.transfer_tax_rate:.0%}**.")
 
-    @vinculo_config.command(name="ressonancia", description="Configura presença recente e bônus de ressonância.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
     async def config_ressonancia(
         self,
         interaction: discord.Interaction,
@@ -3121,14 +3023,6 @@ class VinculosCog(commands.Cog):
             ),
         )
 
-    @vinculo_config.command(
-        name="limite",
-        description="Define o limite diário de solicitações de vínculo por usuário.",
-    )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
-    @app_commands.describe(quantidade="Máximo de solicitações por 24h (0 = sem limite)")
     async def config_limite(
         self,
         interaction: discord.Interaction,
@@ -3270,10 +3164,6 @@ class VinculosCog(commands.Cog):
 
         await self._send_embed(interaction, embed, ephemeral=False)
 
-    @vinculo_config.command(name="relatorio", description="Mostra o relatório administrativo do altar de vínculos.")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.guild_only()
     async def vinculo_relatorio(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             await self._send_text(interaction, "🕯️ Este ritual só existe dentro de um servidor.")
@@ -3283,10 +3173,10 @@ class VinculosCog(commands.Cog):
         active_count = await self.repository.count_active_guild_vinculos(interaction.guild.id)
         pending_count = await self.repository.count_pending_requests(interaction.guild.id)
         settings = await self.repository.get_guild_settings(interaction.guild.id)
-        xp_runtime = getattr(self.bot, "xp_runtime", None)
-        xp_service = getattr(xp_runtime, "service", None)
-        xp_provider = getattr(xp_service, "vinculos_provider", None)
-        xp_status = "Integrado ao ganho de XP" if xp_provider is not None else "XP ainda não expôs o provedor de vínculos"
+        xp_repo = getattr(self.bot, "xp_repository", None)
+        xp_service = getattr(self.bot, "xp_service", None)
+        xp_integrated = xp_repo is not None and xp_service is not None
+        xp_status = "Integrado ao ganho de XP" if xp_integrated else "Sistema de XP ainda não inicializado"
 
         warnings: list[str] = []
         if not role_ids:
@@ -3295,7 +3185,7 @@ class VinculosCog(commands.Cog):
             warnings.append("O sistema está configurado, mas ainda não existem vínculos ativos.")
         if active_count > 0:
             warnings.append("Existem vínculos ativos e o multiplicador será aplicado no ganho de XP.")
-        if xp_provider is None:
+        if not xp_integrated:
             warnings.append("A integração com XP não foi detectada neste instante.")
 
         embed = discord.Embed(
@@ -3337,6 +3227,11 @@ class VinculosCog(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         if message.guild is None or not isinstance(message.author, discord.Member) or message.author.bot:
             return
+        now = time.monotonic()
+        key = (message.guild.id, message.author.id)
+        if now - self._last_activity_write.get(key, 0.0) < 60.0:
+            return
+        self._last_activity_write[key] = now
         try:
             await self.repository.upsert_presence(
                 guild_id=message.guild.id,
@@ -3722,11 +3617,6 @@ class VinculosCog(commands.Cog):
         await self.send_interaction_error(interaction)
 
 
-    @app_commands.command(
-        name="restaurar_vinculos",
-        description="[ADMIN] Disaster Recovery: Restaura vínculos a partir do histórico de um canal."
-    )
-    @app_commands.default_permissions(administrator=True)
     async def restaurar_vinculos(
         self,
         interaction: discord.Interaction,
@@ -3734,7 +3624,6 @@ class VinculosCog(commands.Cog):
         limite: int = 1000
     ) -> None:
         """Ferramenta de Disaster Recovery para reconstruir vínculos apagados (ETL de mensagens do Discord)."""
-        # 1. Preempção para evitar timeout de 3s (I/O-bound pesada e Batch processing)
         await interaction.response.defer(ephemeral=True)
 
         if not interaction.guild_id:
@@ -3756,7 +3645,6 @@ class VinculosCog(commands.Cog):
             await interaction.followup.send(f"❌ Erro HTTP durante a varredura: {e}", ephemeral=True)
             return
 
-        # 3. Transação de Banco de Dados (Batch Synchronization)
         recovery_records = self._collect_recovery_records(
             guild_id=interaction.guild_id,
             messages=history_messages,
@@ -3822,7 +3710,6 @@ class VinculosCog(commands.Cog):
                 await interaction.followup.send(f"❌ Erro crítico ao restaurar os registros no DB: {e}", ephemeral=True)
                 return
 
-        # 4. Interface e UX (Apenas Admin) - Relatório Executivo
         relatorio = (
             "✅ **Operação de Disaster Recovery Concluída**\n"
             f"🔍 Mensagens varridas: `{mensagens_varridas}`\n"
@@ -3835,5 +3722,4 @@ class VinculosCog(commands.Cog):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(VinculosCog(bot, VinculoRepository(DB_PATH)))
-    bot.tree.remove_command("vinculo_config")
-    bot.tree.remove_command("restaurar_vinculos")
+

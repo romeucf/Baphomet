@@ -4,7 +4,6 @@ import os
 import platform
 import sys
 import time
-import traceback
 import uuid
 
 import discord
@@ -12,22 +11,8 @@ from discord import app_commands
 from discord.ext import commands
 from dotenv import load_dotenv
 
-from core.db_transaction import BaphometTransactionManager
+from core.logger import Colors, log_exception
 from core.redis_state import AbyssalRedisManager, RedisConnectionError
-from core.logger import log_exception
-
-# ==============================================================================
-# 1. CORES E ESTILOS PARA TERMINAL (ANSI)
-# ==============================================================================
-class Colors:
-    RESET = "\033[0m"
-    BOLD = "\033[1m"
-    GREEN = "\033[92m"
-    RED = "\033[91m"
-    YELLOW = "\033[93m"
-    CYAN = "\033[96m"
-    MAGENTA = "\033[95m"
-    BLUE = "\033[94m"
 
 # ==============================================================================
 # 2. FUNÇÕES AUXILIARES DE LOGGING (BEAUTIFUL LOGS)
@@ -90,7 +75,6 @@ class MyBot(commands.Bot):
             command_prefix="!",
             intents=intents
         )
-        self.tx_manager = BaphometTransactionManager(db_path="data/baphomet_transactions.sqlite3", pool_size=5)
         self.redis_manager = AbyssalRedisManager()
 
     async def load_all_extensions(self) -> tuple[int, int]:
@@ -101,21 +85,13 @@ class MyBot(commands.Bot):
         if not os.path.exists("./cogs"):
             return 0, 0
 
-        # Regra 1: Arquivos .py soltos em cogs/ (ex: cogs/aotd.py)
-        # Regra 2: Arquivos chamados commands.py dentro de subdiretórios imediatos (ex: cogs/iceberg/commands.py)
-        extensions_to_load = []
-        
-        for item in os.listdir("./cogs"):
-            item_path = os.path.join("./cogs", item)
-            
-            if os.path.isfile(item_path):
-                if item.endswith(".py") and not item.startswith("__"):
-                    extensions_to_load.append(f"cogs.{item[:-3]}")
-                    
-            elif os.path.isdir(item_path) and not item.startswith("__"):
-                commands_file = os.path.join(item_path, "commands.py")
-                if os.path.isfile(commands_file):
-                    extensions_to_load.append(f"cogs.{item}.commands")
+        extensions_to_load = [
+            f"cogs.{item[:-3]}"
+            for item in sorted(os.listdir("./cogs"))
+            if os.path.isfile(os.path.join("./cogs", item))
+            and item.endswith(".py")
+            and not item.startswith("__")
+        ]
 
         for extension in extensions_to_load:
             try:
@@ -132,15 +108,10 @@ class MyBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         """Chamado pelo discord.py antes de logar o bot."""
-        # Inicializa o pool mestre do Redis e injeta no Transaction Manager
         await self.redis_manager.connect()
-        self.tx_manager.inject_redis(self.redis_manager)
-
-        # Inicializa o pool de conexões do tx_manager ANTES das cogs
-        await self.tx_manager.initialize()
 
         loaded, failed = await self.load_all_extensions()
-        
+
         await self.load_achievements_cache()
 
         print_separator()
@@ -161,24 +132,28 @@ class MyBot(commands.Bot):
             log_error("Redis L1 indisponível. Bypass do cache de Achievements ativado para prevenir falhas sistêmicas.")
             return
 
+        xp_repo = getattr(self, "xp_repository", None)
+        if xp_repo is None:
+            log_warn("Repositório XP indisponível. Bypass de cache de conquistas ativado.")
+            return
+
         try:
-            async with self.tx_manager.acquire() as conn:
-                try:
-                    async with conn.execute(
-                        """
-                        SELECT u.guild_id, u.user_id, a.internal_code 
-                        FROM xp_db.user_achievements u
-                        INNER JOIN xp_db.achievements_def a ON u.achievement_id = a.id
-                        """
-                    ) as cursor:
-                        rows = await cursor.fetchall()
-                except Exception as db_err:
-                    # Captura falha se a tabela não existir (ex: migração falhou)
-                    logging.getLogger("Baphomet.Achievements").warning(
-                        "Tabela de conquistas não encontrada ou falha no DDL. Bypass de cache ativado. Erro: %s", db_err
-                    )
-                    log_warn(f"Cache ignorado por ausência estrutural no DB: {db_err}")
-                    return
+            conn = xp_repo.connection
+            try:
+                async with conn.execute(
+                    """
+                    SELECT u.guild_id, u.user_id, a.internal_code
+                    FROM user_achievements u
+                    INNER JOIN achievements_def a ON u.achievement_id = a.id
+                    """
+                ) as cursor:
+                    rows = await cursor.fetchall()
+            except Exception as db_err:
+                logging.getLogger("Baphomet.Achievements").warning(
+                    "Tabela de conquistas não encontrada ou falha no DDL. Bypass de cache ativado. Erro: %s", db_err
+                )
+                log_warn(f"Cache ignorado por ausência estrutural no DB: {db_err}")
+                return
 
             pipe = self.redis_manager._pool.pipeline()
             cache_count = 0
@@ -189,7 +164,7 @@ class MyBot(commands.Bot):
                 key = f"baphomet:achievements:unlocked:{guild_id}:{user_id}"
                 pipe.sadd(key, internal_code)
                 cache_count += 1
-            
+
             if cache_count > 0:
                 await pipe.execute()
                 logging.getLogger("Baphomet.Achievements").info(f"Foram cacheados in-memory com sucesso {cache_count} Secret Achievements na camada L1 (Redis).")
@@ -206,16 +181,15 @@ class MyBot(commands.Bot):
             logging.getLogger("Baphomet.Achievements").warning("Falha inesperada no boot do cache de Achievements: %s", e)
             log_warn(f"Falha amigável de boot L1 cache. O bot continuará online. Erro: {e}")
 
-
     async def close(self) -> None:
         """Desligamento gracioso do Bot."""
         log_warn("Iniciando processo de desligamento seguro...")
 
-        runtime = getattr(self, "xp_runtime", None)
-        if runtime is not None:
+        xp_repo = getattr(self, "xp_repository", None)
+        if xp_repo is not None:
             try:
                 log_info("Fechando conexão segura do repositório de XP...")
-                await runtime.repository.close()
+                await xp_repo.close()
                 log_success("Repositório XP encerrado com sucesso.")
             except Exception as exc:
                 log_error(f"Erro ao fechar repositório XP: {exc}")
@@ -237,13 +211,6 @@ class MyBot(commands.Bot):
                 log_success("Banco MOTD encerrado com sucesso.")
             except Exception as exc:
                 log_error(f"Erro ao fechar banco MOTD: {exc}")
-
-        try:
-            log_info("Encerrando Transaction Manager (tx_manager)...")
-            await self.tx_manager.close()
-            log_success("Transaction Manager encerrado com sucesso.")
-        except Exception as exc:
-            log_error(f"Erro ao fechar Transaction Manager: {exc}")
 
         try:
             log_info("Encerrando Redis Manager (redis_manager)...")

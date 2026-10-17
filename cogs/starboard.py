@@ -1,11 +1,11 @@
 import discord
 from discord.ext import commands
-from discord import app_commands
 import json
 import os
+from core.paths import DATA_DIR
 
 # Arquivo para salvar as configurações e garantir que não sejam perdidas ao reiniciar (Potência)
-CONFIG_FILE = "starboard_config.json"
+CONFIG_FILE = DATA_DIR / "starboard_config.json"
 
 class StarboardCog(commands.Cog):
     def __init__(self, bot):
@@ -21,6 +21,7 @@ class StarboardCog(commands.Cog):
 
     def save_config(self):
         """Salva as configurações no JSON."""
+        CONFIG_FILE.parent.mkdir(parents=True, exist_ok=True)
         with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(self.config, f, indent=4)
 
@@ -38,21 +39,9 @@ class StarboardCog(commands.Cog):
         return self.config[guild_id_str]
 
     # =====================================================================
-    # SLASH COMMANDS DE CONFIGURAÇÃO (Exclusivos para Admins)
+    # MÉTODOS DE CONFIGURAÇÃO (Exclusivos para Admins via /server_config)
     # =====================================================================
-    
-    starboard = app_commands.Group(
-        name="starboard", 
-        description="⚙️ Customização do sistema de Mural de Artes (Starboard)",
-        default_permissions=discord.Permissions(administrator=True) # Exclusivo para Admins
-    )
 
-    @starboard.command(name="setup", description="Define o canal do Mural de Artes e o mínimo de reações.")
-    @app_commands.describe(
-        mural="O canal onde as artes aprovadas serão postadas",
-        min_estrelas="Quantidade de ⭐ necessárias (Padrão: 5)"
-    )
-    @app_commands.checks.has_permissions(administrator=True)
     async def setup_mural(self, interaction: discord.Interaction, mural: discord.TextChannel, min_estrelas: int = 5):
         config = self.get_guild_config(interaction.guild_id)
         config["mural_channel"] = mural.id
@@ -66,8 +55,6 @@ class StarboardCog(commands.Cog):
             ephemeral=True
         )
 
-    @starboard.command(name="add_canal", description="Adiciona um canal para ser monitorado pelo bot.")
-    @app_commands.checks.has_permissions(administrator=True)
     async def add_channel(self, interaction: discord.Interaction, canal: discord.TextChannel):
         config = self.get_guild_config(interaction.guild_id)
         if canal.id in config["monitored_channels"]:
@@ -77,8 +64,6 @@ class StarboardCog(commands.Cog):
         self.save_config()
         await interaction.response.send_message(f"👁️‍🗨️ **Canal adicionado!** Agora estou monitorando {canal.mention} em busca de estrelas.", ephemeral=True)
 
-    @starboard.command(name="remover_canal", description="Para de monitorar um canal específico.")
-    @app_commands.checks.has_permissions(administrator=True)
     async def remove_channel(self, interaction: discord.Interaction, canal: discord.TextChannel):
         config = self.get_guild_config(interaction.guild_id)
         if canal.id in config["monitored_channels"]:
@@ -88,8 +73,6 @@ class StarboardCog(commands.Cog):
         else:
             await interaction.response.send_message(f"⚠️ O canal {canal.mention} não estava na lista de monitoramento.", ephemeral=True)
 
-    @starboard.command(name="status", description="Mostra as configurações atuais do Mural.")
-    @app_commands.checks.has_permissions(administrator=True)
     async def starboard_status(self, interaction: discord.Interaction):
         config = self.get_guild_config(interaction.guild_id)
         mural = f"<#{config['mural_channel']}>" if config['mural_channel'] else "Não definido"
@@ -188,4 +171,4 @@ class StarboardCog(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(StarboardCog(bot))
-    bot.tree.remove_command("starboard")
+

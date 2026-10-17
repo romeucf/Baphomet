@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import io
 import warnings
@@ -28,7 +28,7 @@ class FadeInImageConfig:
     max_height: int = 2000
     max_pixels: int = 4_000_000
     fps: int = 20
-    duration_seconds: float = 1.25
+    duration_seconds: float = 1.0
     output_filename: str = "fadein.gif"
     gif_optimize: bool = True
     enable_compression: bool = True
@@ -269,19 +269,19 @@ def _total_frames(config: FadeInImageConfig) -> int:
 
 
 def _frame_durations_ms(config: FadeInImageConfig, frame_count: int) -> list[int]:
-    if frame_count <= 1:
-        return [2000]
+    if frame_count <= 0:
+        return []
+    if frame_count == 1:
+        return [int(round(config.duration_seconds * 1000))]
 
-    transition_count = frame_count - 1
     total_duration_cs = max(1, int(round(config.duration_seconds * 100)))
-    base_duration_cs = max(1, total_duration_cs // transition_count)
-    remainder_cs = max(0, total_duration_cs - (base_duration_cs * transition_count))
+    base_duration_cs = max(1, total_duration_cs // frame_count)
+    remainder_cs = max(0, total_duration_cs - (base_duration_cs * frame_count))
 
     durations = [
         (base_duration_cs + (1 if index < remainder_cs else 0)) * 10
-        for index in range(transition_count)
+        for index in range(frame_count)
     ]
-    durations.append(2000)
     return durations
 
 

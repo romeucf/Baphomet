@@ -37,11 +37,16 @@ class SecretAchievementsCog(commands.Cog):
 
         if added == 1:
             LOGGER.info(f"[Achievements] Usuário {user_id} desbloqueou a conquista secreta '{internal_code}'. Gravando...")
+            xp_repo = getattr(self.bot, "xp_repository", None)
+            if xp_repo is None:
+                LOGGER.warning("Repositório de XP indisponível ao gravar conquista.")
+                await redis_manager._pool.srem(key, internal_code)
+                return
             try:
-                async with self.bot.tx_manager.acquire() as conn:
-                    # Resolve o ID do achievement baseado no internal_code
+                async with xp_repo._tx_lock:
+                    conn = xp_repo.connection
                     async with conn.execute(
-                        "SELECT id FROM xp_db.achievements_def WHERE internal_code = ?",
+                        "SELECT id FROM achievements_def WHERE internal_code = ?",
                         (internal_code,)
                     ) as cursor:
                         row = await cursor.fetchone()
@@ -50,19 +55,18 @@ class SecretAchievementsCog(commands.Cog):
                         achievement_id = row["id"]
                         await conn.execute(
                             """
-                            INSERT INTO xp_db.user_achievements (user_id, guild_id, achievement_id)
+                            INSERT OR IGNORE INTO user_achievements (user_id, guild_id, achievement_id)
                             VALUES (?, ?, ?)
                             """,
                             (user_id, guild_id, achievement_id)
                         )
+                        await conn.commit()
                     else:
                         LOGGER.error(f"Tentativa de desbloqueio falhou: Conquista com código '{internal_code}' não existe no dicionário.")
-                        # Faz o rollback virtual removendo a chave recém-criada (já que era inválida)
                         await redis_manager._pool.srem(key, internal_code)
-                        
-            except Exception as e:
+
+            except Exception:
                 LOGGER.error(f"Erro transacional ao injetar conquista {internal_code} no banco de dados para {user_id}", exc_info=True)
-                # Rollback compensatório L1
                 await redis_manager._pool.srem(key, internal_code)
 
     @commands.Cog.listener("on_message")

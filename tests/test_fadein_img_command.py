@@ -6,8 +6,8 @@ from types import SimpleNamespace
 import discord
 from discord.ext import commands
 
-from cogs.fadein_img.commands import FadeInImageCog, is_supported_static_image_attachment
-from cogs.fadein_img.errors import (
+from cogs.fadein_img import FadeInImageCog, is_supported_static_image_attachment
+from modules.media_processing.fadein_img.errors import (
     AnimatedImageNotSupportedError,
     ImageTooLargeError,
     InvalidImageError,

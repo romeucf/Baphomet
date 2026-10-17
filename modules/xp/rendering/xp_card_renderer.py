@@ -12,13 +12,12 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 from ..utils.xp_models import LeaderboardEntry, RankSnapshot
 from core.logger import log_exception
+from core.paths import FONTS_DIR
 
 
-# Caminhos sugeridos para as fontes customizadas. 
-# O usuário deve colocar as fontes nesta pasta para o efeito máximo.
-FONT_REGULAR = "assets/fonts/Poppins-Regular.ttf"
-FONT_BOLD = "assets/fonts/Poppins-Bold.ttf"
-FONT_BLACK = "assets/fonts/Montserrat-Black.ttf"
+FONT_REGULAR = str(FONTS_DIR / "Poppins-Regular.ttf")
+FONT_BOLD = str(FONTS_DIR / "Poppins-Bold.ttf")
+FONT_BLACK = str(FONTS_DIR / "Montserrat-Black.ttf")
 
 
 class XpCardRenderer:

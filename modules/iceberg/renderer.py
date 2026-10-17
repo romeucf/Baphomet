@@ -1,11 +1,10 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import io
 import logging
 import pathlib
 import re
 import random
-import secrets
 import textwrap
 from dataclasses import dataclass, replace
 from typing import Any
@@ -19,7 +18,7 @@ from modules.iceberg.constants import (
     ICEBERG_TEMPLATE_TIER_COUNT,
     ICEBERG_TITLE_MAX_LENGTH,
 )
-from modules.iceberg.models import IcebergProject, ItemConfig, ItemDisplayStyle, ItemSourceType, LayerConfig, LayerLayoutMode, ThemeConfig, is_image_source
+from modules.iceberg.models import IcebergProject, ItemConfig, ItemDisplayStyle, ItemSourceType, LayerConfig, LayerLayoutMode, ThemeConfig
 from modules.iceberg.themes import default_layer_name
 
 

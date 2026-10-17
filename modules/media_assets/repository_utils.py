@@ -2,18 +2,12 @@ from __future__ import annotations
 
 import json
 import re
-import unicodedata
 import uuid
 from pathlib import PurePosixPath
-from typing import Any, TypeVar
+from typing import Any
 
-import json
 def dumps_json(obj: Any) -> str:
     return json.dumps(obj, separators=(",", ":"))
-
-
-
-EnumValue = TypeVar("EnumValue", bound=str)
 
 
 def new_uuid() -> str:
@@ -31,13 +25,6 @@ def load_json_dict(raw: str | None) -> dict[str, Any]:
 
 def metadata_to_json(metadata: dict[str, Any] | None) -> str:
     return dumps_json(metadata or {})
-
-
-def normalize_slug(value: str) -> str:
-    normalized = unicodedata.normalize("NFKD", value)
-    ascii_value = normalized.encode("ascii", "ignore").decode("ascii")
-    slug = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_value.lower()).strip("-")
-    return slug or "template"
 
 
 def normalize_optional_text(value: str | None) -> str | None:

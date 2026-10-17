@@ -9,6 +9,7 @@ from typing import Any, Dict, Tuple
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+from core.paths import DATA_DIR
 
 # =========================================================
 # CONSTANTES
@@ -17,7 +18,7 @@ from discord.ext import commands, tasks
 SPAM_MESSAGE_LIMIT = 7
 SPAM_WINDOW_SECONDS = 3
 MAINTENANCE_INTERVAL_MINUTES = 5
-SETTINGS_FILE = Path("guild_settings.json")
+SETTINGS_FILE = DATA_DIR / "guild_settings.json"
 
 DEFAULT_GUILD_SETTINGS: Dict[str, Any] = {
     "geral": None,
@@ -282,48 +283,9 @@ class ModerationCog(commands.Cog):
         uses_str = str(max_uses) if max_uses > 0 else "ilimitado"
         await interaction.response.send_message(f"✅ Gerador de convites ajustado:\n• Expira em: **{age_str}**\n• Usos: **{uses_str}**", ephemeral=True)
 
-    async def convite(self, interaction: discord.Interaction) -> None:
-        if not interaction.guild: return
-        
-        cfg = self._settings(interaction.guild.id)
-        
-        # Procura um canal elegível
-        me = self._get_me(interaction.guild)
-        invite_channel = None
-        if me and isinstance(interaction.channel, discord.TextChannel) and interaction.channel.permissions_for(me).create_instant_invite:
-            invite_channel = interaction.channel
-        elif me:
-            invite_channel = next((ch for ch in interaction.guild.text_channels if ch.permissions_for(me).create_instant_invite), None)
-
-        if not invite_channel:
-            await interaction.response.send_message("❌ Não há canais disponíveis ou estou sem permissão de criar convites.", ephemeral=True)
-            return
-
-        try:
-            invite = await invite_channel.create_invite(
-                max_age=cfg["invite_max_age"],
-                max_uses=cfg["invite_max_uses"],
-                unique=True,
-                reason=f"Emitido via sistema para Mod {interaction.user}"
-            )
-            
-            age_str = f"{cfg['invite_max_age'] // 3600}h" if cfg['invite_max_age'] > 0 else "permanente"
-            uses_str = str(cfg['invite_max_uses']) if cfg['invite_max_uses'] > 0 else "ilimitado"
-            
-            await interaction.response.send_message(f"🔗 {invite.url}\n-# Validade: {age_str} | Usos: {uses_str}", ephemeral=True)
-        except (discord.Forbidden, discord.HTTPException):
-            await interaction.response.send_message("❌ Erro ao criar link na API do Discord.", ephemeral=True)
-
     # =========================================================
-    # SLASH COMMANDS (Anti-Spam Group)
+    # MÉTODOS (Anti-Spam)
     # =========================================================
-
-    antispam_group = app_commands.Group(
-        name="antispam",
-        description="Controles centrais do firewall anti-spam",
-        guild_only=True,
-        default_permissions=discord.Permissions(administrator=True)
-    )
 
     async def antispam_toggle(self, interaction: discord.Interaction) -> None:
         if not interaction.guild_id: return
@@ -345,12 +307,6 @@ class ModerationCog(commands.Cog):
             ephemeral=True
         )
 
-    # =========================================================
-    # ERROR HANDLER CATCH-ALL
-    # =========================================================
-
-
-
 
 # =========================================================
 # FUNÇÃO DE MONTAGEM NO DISCORD
@@ -358,4 +314,4 @@ class ModerationCog(commands.Cog):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(ModerationCog(bot))
-    bot.tree.remove_command("antispam")
+

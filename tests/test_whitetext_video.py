@@ -10,10 +10,10 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from cogs.whitetext.errors import FFmpegNotFoundError, InvalidVideoError, OutputTooLargeError, VideoProcessingError, VideoTooLargeError
-from cogs.whitetext.processor import WhiteTextProcessorConfig
-from cogs.whitetext.processor import process_media
-from cogs.whitetext.video import (
+from modules.media_processing.whitetext.errors import FFmpegNotFoundError, InvalidVideoError, OutputTooLargeError, VideoProcessingError, VideoTooLargeError
+from modules.media_processing.whitetext.processor import WhiteTextProcessorConfig
+from modules.media_processing.whitetext.processor import process_media
+from modules.media_processing.whitetext.video import (
     VideoMetadata,
     VideoProcessingConfig,
     convert_video_to_gif_bytes,
@@ -56,7 +56,7 @@ def make_test_video(*, width: int = 120, height: int = 80, duration: float = 1.0
 
 class WhitetextVideoUnitTests(unittest.TestCase):
     def test_missing_ffmpeg_is_custom_error(self) -> None:
-        with patch("cogs.whitetext.video.shutil.which", return_value=None):
+        with patch("modules.media_processing.whitetext.video.shutil.which", return_value=None):
             with self.assertRaises(FFmpegNotFoundError):
                 ensure_ffmpeg_available()
 
@@ -79,7 +79,7 @@ class WhitetextVideoUnitTests(unittest.TestCase):
             convert_video_to_gif_bytes(b"12345", config)
 
     def test_timeout_is_custom_error(self) -> None:
-        with patch("cogs.whitetext.video.subprocess.run", side_effect=subprocess.TimeoutExpired(["ffmpeg"], 1)):
+        with patch("modules.media_processing.whitetext.video.subprocess.run", side_effect=subprocess.TimeoutExpired(["ffmpeg"], 1)):
             with self.assertRaises(VideoProcessingError):
                 convert_video_to_gif_bytes(b"not empty", VideoProcessingConfig())
 

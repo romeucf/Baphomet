@@ -1,15 +1,16 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from core.paths import FONTS_DIR
 from modules.media_processing.whitetext.errors import FontNotFoundError, InvalidTextError, LayoutComputationError, TextTooLongError
 
 
 FONT_FILENAME = "FuturaCEB.otf"
-DEFAULT_FONT_PATH = Path("..") / "assets" / "fonts" / FONT_FILENAME
+DEFAULT_FONT_PATH = FONTS_DIR / FONT_FILENAME
 
 
 @dataclass(frozen=True)

@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import logging
-import pathlib
 import secrets
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 import discord
-from discord import app_commands
 from discord.ext import commands, tasks
+from core.paths import DATA_DIR
 
 LOGGER = logging.getLogger("baphomet.bump")
 
@@ -34,8 +33,6 @@ SUCCESS_KEYWORDS = (
 # Se o Disboard estiver em cooldown, o embed é vermelho/laranja.
 DISBOARD_SUCCESS_COLOR = 0x24B7B7
 
-DATA_DIR = pathlib.Path("data")
-DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "bump_reminder.sqlite3"
 
 
@@ -371,17 +368,7 @@ class BumpReminderCog(commands.Cog):
     async def before_check(self) -> None:
         await self.bot.wait_until_ready()
 
-    # ── Comando de Configuração (Admin) ─────────────────────────────────
-    @app_commands.command(
-        name="configurar_bump",
-        description="Define o canal e cargo para o lembrete do /bump 🔔",
-    )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(
-        canal="Canal onde o lembrete será enviado (padrão: onde o bump foi dado)",
-        cargo="Cargo que será mencionado no lembrete (opcional)",
-    )
+    # ── Método de Configuração (Admin via /server_config) ──────────────
     async def configurar_bump(
         self,
         interaction: discord.Interaction,
@@ -420,4 +407,4 @@ class BumpReminderCog(commands.Cog):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(BumpReminderCog(bot))
-    bot.tree.remove_command("configurar_bump")
+

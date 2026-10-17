@@ -894,7 +894,6 @@ class MovieCog(commands.Cog):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(MovieCog(bot))
-    bot.tree.remove_command("motd_config")
 
 
 __all__ = [

@@ -10,14 +10,14 @@ import aiosqlite
 
 
 from core.logger import log_exception
-
+from core.paths import DATA_DIR
 
 
 LOGGER = logging.getLogger("baphomet.tierlist_templates.database")
 
 
 class DatabaseManager:
-    def __init__(self, db_path: str | pathlib.Path = "data/tier_templates.sqlite3") -> None:
+    def __init__(self, db_path: str | pathlib.Path = DATA_DIR / "tier_templates.sqlite3") -> None:
         self.db_path = pathlib.Path(db_path)
         self._conn: aiosqlite.Connection | None = None
         self._write_lock = asyncio.Lock()

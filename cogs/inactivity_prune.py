@@ -4,20 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import pathlib
 from datetime import datetime, timedelta, timezone
 
 import aiosqlite
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from core.logger import log_exception
+from core.paths import DATA_DIR
 
 
 LOGGER = logging.getLogger("baphomet.prune")
 
-DATA_DIR = pathlib.Path("data")
-DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "activity_tracker.sqlite3"
 
 
@@ -73,6 +71,21 @@ class ActivityRepository:
                 last_seen = excluded.last_seen
             """,
             (guild_id, user_id, timestamp.isoformat()),
+        )
+        await self.conn.commit()
+
+    async def upsert_activities_batch(self, items: list[tuple[int, int, str]]) -> None:
+        """Grava um lote de atividades acumuladas em uma única transação SQLite."""
+        if not items or self._conn is None:
+            return
+        await self.conn.executemany(
+            """
+            INSERT INTO last_activity (guild_id, user_id, last_seen)
+            VALUES (?, ?, ?)
+            ON CONFLICT(guild_id, user_id) DO UPDATE SET
+                last_seen = excluded.last_seen
+            """,
+            items,
         )
         await self.conn.commit()
 
@@ -177,15 +190,46 @@ class InactivityPruneCog(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         self.repo = ActivityRepository(str(DB_PATH))
+        self._pending_activity: dict[tuple[int, int], int] = {}
 
     async def cog_load(self) -> None:
         await self.repo.connect()
+        self.flush_activity_task.start()
         LOGGER.info("InactivityPruneCog carregado.")
 
     async def cog_unload(self) -> None:
+        self.flush_activity_task.cancel()
+        await self._flush_pending_activity()
         await self.repo.close()
 
-    # ── Rastreio Silencioso ─────────────────────────────────────────────────
+    async def _flush_pending_activity(self) -> None:
+        if not self._pending_activity:
+            return
+        pending = dict(self._pending_activity)
+        self._pending_activity.clear()
+        batch = [
+            (
+                guild_id,
+                user_id,
+                datetime.fromtimestamp(ts, tz=timezone.utc).isoformat(),
+            )
+            for (guild_id, user_id), ts in pending.items()
+        ]
+        try:
+            await self.repo.upsert_activities_batch(batch)
+        except Exception as exc:
+            log_exception(exc)
+            LOGGER.error(f"Erro ao gravar atividades em lote: {exc}")
+
+    @tasks.loop(seconds=60)
+    async def flush_activity_task(self) -> None:
+        await self._flush_pending_activity()
+
+    @flush_activity_task.before_loop
+    async def before_flush_activity_task(self) -> None:
+        await self.bot.wait_until_ready()
+
+    # ── Rastreio Silencioso (Em Memória com Flush Periódico) ────────────────
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
         # Ignorar bots e DMs
@@ -194,26 +238,21 @@ class InactivityPruneCog(commands.Cog):
         if message.guild is None:
             return
 
-        await self.repo.upsert_activity(
-            message.guild.id,
-            message.author.id,
-            message.created_at.replace(tzinfo=timezone.utc) if message.created_at.tzinfo is None else message.created_at,
+        created_at = (
+            message.created_at.replace(tzinfo=timezone.utc)
+            if message.created_at.tzinfo is None
+            else message.created_at
         )
+        self._pending_activity[(message.guild.id, message.author.id)] = int(created_at.timestamp())
 
-    # ── Comando Principal ───────────────────────────────────────────────────
-    @app_commands.command(
-        name="expulsar_inativos",
-        description="Expulsa membros que não enviam mensagens há X dias ⚠️",
-    )
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(dias="Quantidade mínima de dias de inatividade para expulsão")
+    # ── Método Principal (chamado por /server_config) ───────────────────────
     async def expulsar_inativos(self, interaction: discord.Interaction, dias: app_commands.Range[int, 1, 365]) -> None:
         # ┌─────────────────────────────────────────────────────────────────┐
         # │  DEFER IMEDIATO: O processamento pode demorar em servidores    │
         # │  grandes. Sem isso, o Discord cancela a interação em 3s.       │
         # └─────────────────────────────────────────────────────────────────┘
         await interaction.response.defer(thinking=True)
+        await self._flush_pending_activity()
 
         now = datetime.now(timezone.utc)
         cutoff = now - timedelta(days=dias)
@@ -397,24 +436,13 @@ class InactivityPruneCog(commands.Cog):
         LOGGER.info(f"[Guild {interaction.guild.id}] Prune finalizado: {kicked} expulsos, {failed} falhas.")
 
 
-# ── Grupo de Comandos: Whitelist ────────────────────────────────────────────
-class WhitelistGroup(app_commands.Group):
+# ── Helper de Whitelist (usado por /server_config whitelist_inativos) ───────
+class WhitelistGroup:
     """Gerencia a lista de exceções do sistema de expulsão por inatividade."""
 
     def __init__(self, cog: InactivityPruneCog) -> None:
-        super().__init__(
-            name="whitelist_inativos",
-            description="Gerencia a whitelist do Prune de inativos 🛡️",
-            default_permissions=discord.Permissions(administrator=True),
-        )
         self.cog = cog
 
-    @app_commands.command(name="adicionar", description="Adiciona um membro ou cargo à whitelist 🛡️")
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(
-        usuario="Membro que será imune à expulsão (opcional)",
-        cargo="Cargo cujos membros serão imunes à expulsão (opcional)",
-    )
     async def adicionar(
         self,
         interaction: discord.Interaction,
@@ -445,12 +473,6 @@ class WhitelistGroup(app_commands.Group):
 
         await interaction.response.send_message("\n".join(results), ephemeral=True)
 
-    @app_commands.command(name="remover", description="Remove um membro ou cargo da whitelist 🗑️")
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(
-        usuario="Membro a ser removido da whitelist (opcional)",
-        cargo="Cargo a ser removido da whitelist (opcional)",
-    )
     async def remover(
         self,
         interaction: discord.Interaction,
@@ -481,8 +503,6 @@ class WhitelistGroup(app_commands.Group):
 
         await interaction.response.send_message("\n".join(results), ephemeral=True)
 
-    @app_commands.command(name="listar", description="Mostra quem está imune ao prune 📋")
-    @app_commands.checks.has_permissions(administrator=True)
     async def listar(self, interaction: discord.Interaction) -> None:
         entries = await self.cog.repo.get_whitelist(interaction.guild.id)
 
@@ -514,9 +534,5 @@ class WhitelistGroup(app_commands.Group):
 
 
 async def setup(bot: commands.Bot) -> None:
-    cog = InactivityPruneCog(bot)
-    cog.__cog_app_commands_group__ = None  # Permitir grupo externo
-    bot.tree.add_command(WhitelistGroup(cog))
-    await bot.add_cog(cog)
-    bot.tree.remove_command("whitelist_inativos")
-    bot.tree.remove_command("expulsar_inativos")
+    await bot.add_cog(InactivityPruneCog(bot))
+

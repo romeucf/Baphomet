@@ -1,4 +1,4 @@
-﻿"""
+"""
 ╔══════════════════════════════════════════════════════════════╗
 ║                  WELCOME COG — Discord Bot                   ║
 ║  Boas-vindas automáticas com embed configurável via Modal    ║
@@ -33,16 +33,17 @@ import logging
 import asyncio
 import io
 from PIL import Image
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from core.logger import log_exception
+from core.paths import DATA_DIR
 
 
 # ─── Logger ────────────────────────────────────────────────────────────────────
 log = logging.getLogger("welcome_cog")
 
 # ─── Arquivo de persistência ───────────────────────────────────────────────────
-CONFIG_PATH = "data/welcome_config.json"
+CONFIG_PATH = DATA_DIR / "welcome_config.json"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -50,7 +51,7 @@ CONFIG_PATH = "data/welcome_config.json"
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _load_all() -> dict:
-    os.makedirs("data", exist_ok=True)
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     if not os.path.exists(CONFIG_PATH):
         return {}
     try:
@@ -62,7 +63,7 @@ def _load_all() -> dict:
 
 
 def _save_all(data: dict) -> None:
-    os.makedirs("data", exist_ok=True)
+    CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     try:
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             json.dump(data, f, ensure_ascii=False, indent=2)
@@ -78,16 +79,6 @@ def config_set(guild_id: int, cfg: dict) -> None:
     all_cfg = _load_all()
     all_cfg[str(guild_id)] = cfg
     _save_all(all_cfg)
-
-
-def config_delete(guild_id: int) -> bool:
-    all_cfg = _load_all()
-    key = str(guild_id)
-    if key not in all_cfg:
-        return False
-    del all_cfg[key]
-    _save_all(all_cfg)
-    return True
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -162,7 +153,7 @@ async def build_embed(cfg: dict, member: discord.Member) -> discord.Embed:
         title=_apply_vars(cfg.get("title", "Bem-vindo(a)!"), member),
         description=_apply_vars(cfg.get("description", ""), member),
         color=color_val,
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     # Thumbnail: URL personalizada ou avatar do membro
@@ -199,7 +190,7 @@ def build_preview_embed(cfg: dict, guild: discord.Guild) -> discord.Embed:
         title=_preview(cfg.get("title", "Bem-vindo(a)!")),
         description=_preview(cfg.get("description", "")),
         color=resolve_color(cfg.get("color", "blurple")),
-        timestamp=datetime.utcnow(),
+        timestamp=datetime.now(timezone.utc),
     )
 
     if guild.icon:
@@ -284,7 +275,7 @@ class WelcomeModal(discord.ui.Modal, title="⚙️ Configurar Boas-Vindas"):
             "thumbnail_url": "",   # usa avatar do membro por padrão
             "enabled":       True,
             "configured_by": interaction.user.id,
-            "configured_at": datetime.utcnow().isoformat(),
+            "configured_at": datetime.now(timezone.utc).isoformat(),
         }
 
         config_set(interaction.guild_id, cfg)
@@ -378,19 +369,8 @@ class WelcomeCog(commands.Cog, name="Welcome"):
         self.bot = bot
         log.info("WelcomeCog carregado com sucesso.")
 
-    # ── Grupo /welcome ──────────────────────────────────────────────────────
+    # ── Métodos de configuração (expostos via /server_config) ──────────────
 
-    welcome = app_commands.Group(
-        name="welcome",
-        description="Gerencia as mensagens de boas-vindas do servidor.",
-        default_permissions=discord.Permissions(administrator=True),
-        guild_only=True,
-    )
-
-    # ── /welcome setup ──────────────────────────────────────────────────────
-
-    @welcome.command(name="setup", description="[Admin] Configura o canal e o embed de boas-vindas.")
-    @app_commands.checks.has_permissions(administrator=True)
     async def cmd_setup(self, interaction: discord.Interaction) -> None:
         embed = discord.Embed(
             title="⚙️ Configuração de Boas-Vindas",
@@ -409,15 +389,11 @@ class WelcomeCog(commands.Cog, name="Welcome"):
         embed.set_footer(text="Esta mensagem expira em 2 minutos.")
         await interaction.response.send_message(embed=embed, view=ChannelSelectView(), ephemeral=True)
 
-    # ── /welcome preview ────────────────────────────────────────────────────
-
-    @welcome.command(name="preview", description="[Admin] Mostra um preview do embed de boas-vindas.")
-    @app_commands.checks.has_permissions(administrator=True)
     async def cmd_preview(self, interaction: discord.Interaction) -> None:
         cfg = config_get(interaction.guild_id)
         if not cfg:
             await interaction.response.send_message(
-                "❌ Nenhuma configuração encontrada. Use `/welcome setup` primeiro.",
+                "❌ Nenhuma configuração encontrada. Use `/server_config boasvindas setup` primeiro.",
                 ephemeral=True,
             )
             return
@@ -436,7 +412,6 @@ class WelcomeCog(commands.Cog, name="Welcome"):
         )
         preview = build_preview_embed(cfg, interaction.guild)
         await interaction.response.send_message(embeds=[info, preview], ephemeral=True)
-
 
     # ── Tratamento de erros do grupo ────────────────────────────────────────
 
@@ -484,7 +459,8 @@ class WelcomeCog(commands.Cog, name="Welcome"):
 
         try:
             embed = await build_embed(cfg, member)
-            await channel.send(embed=embed)
+            sent_msg = await channel.send(embed=embed)
+            self.bot.dispatch("welcome_message_sent", member, sent_msg)
             log.info(
                 "Boas-vindas enviadas → %s em '%s' (#%s)",
                 member, member.guild.name, channel.name,
@@ -499,4 +475,4 @@ class WelcomeCog(commands.Cog, name="Welcome"):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(WelcomeCog(bot))
-    bot.tree.remove_command("welcome")
+

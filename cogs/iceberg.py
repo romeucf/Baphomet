@@ -290,4 +290,3 @@ async def setup(bot: commands.Bot) -> None:
     cog = IcebergCog(bot)
     await cog.start()
     await bot.add_cog(cog)
-    bot.tree.remove_command("iceberg")

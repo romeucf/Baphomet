@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 import re
@@ -8,12 +8,12 @@ import discord
 
 from modules.iceberg.constants import ICEBERG_TITLE_MAX_LENGTH
 from modules.iceberg.models import ItemSourceType, PlacementConfig
-from .sources.providers import IcebergUserError
+from modules.iceberg.sources.providers import IcebergUserError
 from core.logger import log_exception
 
 
 if TYPE_CHECKING:
-    from .commands import IcebergCog
+    from cogs.iceberg import IcebergCog
 
 
 LOGGER = logging.getLogger("baphomet.iceberg.modals")

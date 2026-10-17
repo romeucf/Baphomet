@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import importlib.util
@@ -14,29 +14,52 @@ import discord
 from discord.ext import commands
 from PIL import Image
 
-from cogs.iceberg.commands import IcebergCog
-from cogs.iceberg.models import (
+from cogs.iceberg import IcebergCog
+from modules.iceberg.models import (
     IcebergProject,
     ItemConfig,
     ItemDisplayStyle,
     ItemSource,
     ItemSourceType,
     LayerConfig,
+    LayerLayoutMode,
     PlacementConfig,
     is_image_source,
 )
-from cogs.iceberg.renderer import IcebergRenderer, IcebergTemplateError, TEMPLATE_ITEM_SAFE_RIGHT_RATIO, crop_center_square
-from cogs.iceberg.repository import IcebergDatabaseManager, IcebergRepository
-from cogs.iceberg.service import IcebergService
-from modules.iceberg.sources.providers import AttachmentImageProvider, IcebergUserError, TextItemProvider
-from cogs.iceberg.themes import DEFAULT_LAYER_NAMES, default_layer_name, default_layers, get_theme
-from cogs.iceberg.constants import (
+from modules.iceberg.renderer import (
+    IcebergRenderer,
+    IcebergTemplateError,
+    TEMPLATE_ITEM_SAFE_RIGHT_RATIO,
+    crop_center_square,
+)
+from modules.iceberg.repository import IcebergDatabaseManager, IcebergRepository
+from modules.iceberg.service import IcebergService
+from modules.iceberg.sources.providers import (
+    AttachmentImageProvider,
+    DiscordAvatarProvider,
+    IcebergUserError,
+    ImageUrlProvider,
+    ResolvedIcebergSource,
+    TextItemProvider,
+    WikipediaImageProvider,
+)
+from modules.iceberg.themes import DEFAULT_LAYER_NAMES, default_layer_name, default_layers, get_theme
+from modules.iceberg.constants import (
     ICEBERG_MAX_LAYERS,
     ICEBERG_TEMPLATE_TIER_COUNT,
     ICEBERG_TITLE_MAX_LENGTH,
     MAX_IMAGE_ITEMS_PER_LAYER,
     MAX_TEXT_ITEMS_PER_LAYER,
 )
+import modules.iceberg.discord_ui.modals as iceberg_modals
+from modules.iceberg.discord_ui.modals import IcebergAddItemModal, IcebergGeneralModal
+from modules.iceberg.discord_ui.views import (
+    IcebergEditorView,
+    IcebergManageItemsView,
+    IcebergWikipediaCandidateView,
+)
+from modules.integrations.wikipedia import WikipediaUserError
+from modules.media_assets.exceptions import AssetDownloadError, AssetValidationError
 
 
 AIOSQLITE_AVAILABLE = importlib.util.find_spec("aiosqlite") is not None
@@ -82,6 +105,7 @@ def template_bounds(height: int) -> list[int]:
 
 
 def write_test_template(path: Path, *, width: int = 100, height: int = 101) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     bounds = template_bounds(height)
     image = Image.new("RGBA", (width, height), TEMPLATE_TIER_COLORS[0])
     for index, color in enumerate(TEMPLATE_TIER_COLORS):
@@ -187,9 +211,6 @@ class MemoryIcebergRepository:
 
 class IcebergManageItemsViewTests(unittest.IsolatedAsyncioTestCase):
     async def test_editor_view_does_not_expose_layer_configuration(self) -> None:
-        import cogs.iceberg.modals as iceberg_modals
-        from cogs.iceberg.views import IcebergEditorView
-
         view = IcebergEditorView(cog=SimpleNamespace(), project=make_project())
         labels = {getattr(child, "label", "") for child in view.children}
         custom_ids = {getattr(child, "custom_id", "") for child in view.children}
@@ -198,8 +219,6 @@ class IcebergManageItemsViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(hasattr(iceberg_modals, "IcebergLayersModal"))
 
     async def test_manage_items_view_uses_default_layer_names_for_old_custom_layers(self) -> None:
-        from cogs.iceberg.views import IcebergManageItemsView
-
         project = make_project()
         project.layers[0].name = "Nome Antigo Customizado"
         view = IcebergManageItemsView(cog=SimpleNamespace(), project=project, panel_message=None)
@@ -207,8 +226,6 @@ class IcebergManageItemsViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Nome Antigo", view.options()[0].description)
 
     async def test_general_modal_clips_legacy_long_title_default(self) -> None:
-        from cogs.iceberg.modals import IcebergGeneralModal
-
         modal = IcebergGeneralModal(
             SimpleNamespace(),
             project_id="project-1",
@@ -219,7 +236,6 @@ class IcebergManageItemsViewTests(unittest.IsolatedAsyncioTestCase):
         self.assertLessEqual(len(str(modal.name_input.default)), ICEBERG_TITLE_MAX_LENGTH)
 
     async def test_pagination_options_slice(self) -> None:
-        from cogs.iceberg.views import IcebergManageItemsView
         project = make_project()
 
         project.items = []
@@ -434,7 +450,6 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
 
 
     def test_renderer_layout_modes(self) -> None:
-        from cogs.iceberg.models import LayerLayoutMode
         project = make_project()
 
         with tempfile.TemporaryDirectory() as tmp:
@@ -556,7 +571,6 @@ class IcebergRendererSnapshotTests(unittest.TestCase):
         self.assertEqual(renderer.drawn_ids, ["z1-sort0", "z1-sort1", "z2-sort0"])
 
     def test_renderer_overflow_raises_error(self) -> None:
-        from cogs.iceberg.models import LayerLayoutMode, ItemConfig, ItemSource, ItemSourceType, ItemDisplayStyle
         project = make_project()
         project.layers[0].layout_mode = LayerLayoutMode.GRID
 
@@ -657,7 +671,7 @@ class IcebergServiceValidationTests(unittest.IsolatedAsyncioTestCase):
         project.items = []
         await service.repository.save_project(project)
 
-        with patch("cogs.iceberg.service.asyncio.to_thread", inline_to_thread):
+        with patch("modules.iceberg.service.asyncio.to_thread", inline_to_thread):
             with self.assertRaises(IcebergUserError) as cm:
                 await service.render_project("project-1", owner_id=42)
         self.assertEqual(cm.exception.code, "template_unavailable")
@@ -710,9 +724,6 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_image_url_invalid(self) -> None:
-        from modules.iceberg.sources.providers import ImageUrlProvider
-        from modules.media_assets.exceptions import AssetDownloadError
-
         class FakeDownloader:
             async def download(self, url: str) -> None:
                 raise AssetDownloadError("Acesso bloqueado por segurança", code="ssrf_blocked")
@@ -722,8 +733,6 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
             await provider.resolve(value="http://127.0.0.1/image.png")
 
     async def test_discord_avatar_user_not_found(self) -> None:
-        from modules.iceberg.sources.providers import DiscordAvatarProvider
-
         class FakeClient:
             async def fetch_user(self, user_id: int):
                 raise discord.HTTPException(SimpleNamespace(status=404, reason="Not Found"), "Not Found")
@@ -734,9 +743,6 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cm.exception.code, "avatar_user_not_found")
 
     async def test_wikipedia_without_thumbnail(self) -> None:
-        from modules.iceberg.sources.providers import WikipediaImageProvider
-        from modules.integrations.wikipedia import WikipediaUserError
-
         class FakeWikipediaService:
             async def resolve(self, query: str, **kwargs):
                 raise WikipediaUserError("Nenhuma imagem encontrada", code="wikipedia_no_image")
@@ -747,8 +753,6 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cm.exception.code, "wikipedia_no_image")
 
     async def test_attachment_too_large(self) -> None:
-        from modules.iceberg.sources.providers import AttachmentImageProvider
-
         class FakeAttachment:
             size = 10 * 1024 * 1024 # 10MB
 
@@ -758,8 +762,6 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cm.exception.code, "attachment_too_large")
 
     async def test_attachment_fake_content_type(self) -> None:
-        from modules.iceberg.sources.providers import AttachmentImageProvider
-
         class FakeAttachment:
             size = 1024
             content_type = "application/pdf"
@@ -770,9 +772,6 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cm.exception.code, "attachment_not_image")
 
     async def test_attachment_invalid_truncated_image(self) -> None:
-        from modules.iceberg.sources.providers import AttachmentImageProvider
-        from modules.media_assets.exceptions import AssetValidationError
-
         class FakeAssetStore:
             async def store_image_bytes(self, raw_bytes: bytes, **kwargs):
                 raise AssetValidationError("Imagem corrompida", code="image_invalid")
@@ -792,8 +791,6 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_wikipedia_modal_returns_candidate_view(self) -> None:
-        from cogs.iceberg.modals import IcebergAddItemModal
-        from cogs.iceberg.views import IcebergWikipediaCandidateView
 
         async def mock_search(q):
             return [{"title": "Teste", "pageid": 1, "description": "", "thumbnail_url": ""}]
@@ -831,8 +828,6 @@ class IcebergSourceProviderTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_wikipedia_search_candidates(self) -> None:
-        from modules.iceberg.sources.providers import WikipediaImageProvider
-
         class FakeCandidate:
             def __init__(self, pageid, title, description, thumbnail_url):
                 self.pageid = pageid
@@ -997,7 +992,6 @@ class IcebergLayerItemLimitTests(unittest.IsolatedAsyncioTestCase):
         )
 
     async def _fake_resolve(self, source_type, **kwargs):
-        from modules.iceberg.sources.providers import ResolvedIcebergSource
         title = kwargs.get("title") or ""
         value = kwargs.get("value") or title
         return ResolvedIcebergSource(

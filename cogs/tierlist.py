@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import io
@@ -3324,7 +3324,6 @@ class TierListCog(
         self.sessions: dict[int, TierListSession] = {}
 
         self.renderer = TierListRenderer()
-# oi
         self.spotify_service = SpotifyService()
         self.spotify_resolver = SpotifyInputResolver(self.spotify_service)
         self.spotify_image_downloader = SpotifyImageDownloader(
@@ -3333,37 +3332,6 @@ class TierListCog(
             timeout_seconds=max(self.IMAGE_DOWNLOAD_TIMEOUT, 8),
         )
         self.wikipedia_service = WikipediaImageService()
-
-    async def get_spotify_access_token(self) -> str | None:
-        """
-        Compatibilidade com versões antigas.
-
-        A autenticação real agora fica dentro do Spotipy/SpotifyService, usando
-        Client Credentials Flow e inicialização lazy do cliente.
-        """
-        if not self.spotify_service.is_configured:
-            LOGGER.warning("Credenciais Spotify ausentes ou Spotipy indisponível.")
-            return None
-        return "<managed-by-spotipy>"
-
-    async def fetch_spotify_album_cover(self, query: str) -> str | None:
-        """
-        Compatibilidade com o fluxo antigo de álbum.
-
-        Novos caminhos devem usar resolve_spotify_input() e receber metadados
-        completos. Este método continua existindo para qualquer chamada legada.
-        """
-        try:
-            resolution = await self.resolve_spotify_input(query, preferred_type="album", allow_ambiguous=False)
-        except SpotifyUserError as exc:
-            LOGGER.warning("Busca legada de capa Spotify falhou: %s", exc.code)
-            return None
-        except Exception as exc:
-            log_exception(exc)
-            LOGGER.exception("Busca legada de capa Spotify falhou inesperadamente.")
-            return None
-
-        return resolution.item.image_url if resolution.item else None
 
     async def resolve_spotify_input(
         self,
@@ -3533,139 +3501,6 @@ class TierListCog(
             )
             for tier in session.tiers
         )
-
-    def build_spotify_attribution_text(
-        self,
-        tiers_snapshot: OrderedDictType[str, list[TierItem]],
-        *,
-        max_visible: int = 8,
-    ) -> str:
-        entries: list[str] = []
-        seen: set[tuple[str | None, str | None, str | None]] = set()
-
-        for items in tiers_snapshot.values():
-            for item in items:
-                if item.source_type != "spotify" and not item.spotify_url:
-                    continue
-                key = (item.spotify_type, item.spotify_id, item.spotify_url)
-                if key in seen:
-                    continue
-                seen.add(key)
-
-                label = item.spotify_name or item.name or "Item Spotify"
-                artist_text = ", ".join(item.spotify_artists[:2])
-                if artist_text:
-                    label = f"{label} - {artist_text}"
-                safe_label = discord.utils.escape_markdown(label)
-                if item.spotify_url:
-                    entries.append(f"- {safe_label}: <{item.spotify_url}>")
-
-        if not entries:
-            return ""
-
-        visible_entries = entries[:max_visible]
-        hidden_count = max(0, len(entries) - len(visible_entries))
-        suffix = f"\n... +{hidden_count} itens Spotify" if hidden_count else ""
-        return (
-            "Capas e metadados fornecidos pelo Spotify. Links dos itens usados:\n"
-            + "\n".join(visible_entries)
-            + suffix
-        )
-
-    def collect_wikimedia_attribution_entries(
-        self,
-        tiers_snapshot: OrderedDictType[str, list[TierItem]],
-    ) -> list[dict[str, str]]:
-        entries: list[dict[str, str]] = []
-        seen: set[tuple[str | None, int | None, str | None]] = set()
-
-        for items in tiers_snapshot.values():
-            for item in items:
-                if item.source_type != WIKIPEDIA_SOURCE_TYPE:
-                    continue
-
-                key = (item.wiki_language, item.wikipedia_pageid, item.wikimedia_file_title)
-                if key in seen:
-                    continue
-                seen.add(key)
-
-                label = item.name or item.display_name or item.wikipedia_title or "Item Wikipedia"
-                file_title = item.wikimedia_file_title or "arquivo Wikimedia"
-                author_credit = item.artist or item.credit or "autor/crédito não informado"
-                license_text = item.license_short_name or item.usage_terms or "licença não informada"
-                link = item.wikimedia_file_description_url or item.wikipedia_url or item.image_url_used or item.image_url or ""
-                entries.append({
-                    "label": label,
-                    "file_title": file_title,
-                    "author_credit": author_credit,
-                    "license_text": license_text,
-                    "link": link,
-                })
-
-        return entries
-
-    def format_wikimedia_attribution_entry(
-        self,
-        entry: dict[str, str],
-        *,
-        markdown: bool,
-    ) -> str:
-        parts = [
-            entry.get("label") or "Item Wikipedia",
-            entry.get("file_title") or "arquivo Wikimedia",
-            entry.get("author_credit") or "autor/crédito não informado",
-            entry.get("license_text") or "licença não informada",
-        ]
-        if markdown:
-            formatted_parts = [discord.utils.escape_markdown(part) for part in parts]
-            link = entry.get("link") or ""
-            if link:
-                formatted_parts.append(f"<{link}>")
-            return " - ".join(formatted_parts)
-
-        link = entry.get("link") or ""
-        if link:
-            parts.append(link)
-        return " - ".join(parts)
-
-    def build_wikimedia_attribution_text(
-        self,
-        tiers_snapshot: OrderedDictType[str, list[TierItem]],
-        *,
-        max_visible: int = 5,
-    ) -> tuple[str, bytes | None]:
-        entries = self.collect_wikimedia_attribution_entries(tiers_snapshot)
-        if not entries:
-            return "", None
-
-        visible_entries = entries[:max_visible]
-        hidden_count = max(0, len(entries) - len(visible_entries))
-        visible_text = (
-            "Imagens via Wikipedia/Wikimedia. Créditos/licenças:\n"
-            + "\n".join(
-                f"- {self.format_wikimedia_attribution_entry(entry, markdown=True)}"
-                for entry in visible_entries
-            )
-        )
-
-        full_text = (
-            "Imagens via Wikipedia/Wikimedia. Créditos/licenças:\n"
-            + "\n".join(
-                f"- {self.format_wikimedia_attribution_entry(entry, markdown=False)}"
-                for entry in entries
-            )
-        )
-        if hidden_count:
-            visible_text += f"\n... +{hidden_count} itens no arquivo de atribuições"
-            return visible_text, full_text.encode("utf-8")
-
-        return visible_text, None
-
-    def spotify_item_auto_label(self, item: TierItem) -> str:
-        base_name = item.track_name or item.album_name or item.spotify_name or "Item Spotify"
-        artist_text = ", ".join(item.spotify_artists) if item.spotify_artists else ""
-        label = f"{base_name} - {artist_text}" if artist_text else base_name
-        return self.clean_text(label, max_length=80)
 
     def clear_spotify_metadata(self, item: TierItem) -> None:
         item.image_cache_key = None
@@ -4109,4 +3944,4 @@ class TierListCog(
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(TierListCog(bot))
-    bot.tree.remove_command("tierlist")
+

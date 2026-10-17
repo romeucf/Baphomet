@@ -11,6 +11,7 @@ from PIL import Image, UnidentifiedImageError
 
 from ..db.xp_repository import XpRepository
 from ..utils import RankBadge
+from core.paths import DATA_DIR
 
 
 BADGE_SIZE = 64
@@ -28,7 +29,7 @@ class RankBadgeService:
         self,
         repository: XpRepository,
         *,
-        storage_root: str | pathlib.Path = "data/rank_badges",
+        storage_root: str | pathlib.Path = DATA_DIR / "rank_badges",
     ) -> None:
         self.repository = repository
         self.storage_root = pathlib.Path(storage_root)

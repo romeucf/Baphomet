@@ -12,20 +12,19 @@ from discord.ext import commands
 
 from modules.xp.rendering.xp_card_renderer import XpCardRenderer
 from modules.xp.rendering.rank_badges import RankBadgeService
-from modules.xp.db.xp_models import XpDifficulty
+from modules.xp.utils.xp_models import XpDifficulty
 from modules.xp.db.xp_repository import XpRepository
 from modules.xp.services.xp_service import XpService
 from modules.xp.rendering.xp_views import (
-    FullLeaderboardPaginator,
     LeaderboardView,
     RankCardView,
     LeaderboardVisualView,
     build_leaderboard_embed,
 )
 from core.logger import log_exception
+from core.paths import DATA_DIR
+
 LOGGER = logging.getLogger("baphomet.xp")
-DATA_DIR = pathlib.Path("data")
-DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "baphomet_xp.sqlite3"
 
 LEVEL_UP_MESSAGES = [
@@ -68,13 +67,15 @@ async def ensure_xp_runtime(bot: commands.Bot) -> None:
 class XpPublicCommands(commands.Cog):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
+        self.repository: XpRepository = bot.xp_repository
         self.service: XpService = bot.xp_service
         self.cards: XpCardRenderer = bot.xp_cards
         self.badges: RankBadgeService = bot.xp_badges
         self.logger = LOGGER
 
     async def cog_unload(self) -> None:
-        pass
+        if getattr(self, "repository", None) is not None:
+            await self.repository.close()
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -351,13 +352,6 @@ class XpAdminCommands(commands.GroupCog, group_name="xp", group_description="Com
     @app_commands.checks.has_permissions(administrator=True)
     @app_commands.describe(member="Membro Que Receberá O XP", amount="Quantidade De XP", reason="Motivo Da Concessão")
     async def add_xp(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 10000000], reason: str | None = None) -> None:
-        await self._apply_manual_xp(interaction, member, amount, reason)
-
-    @app_commands.command(name="adicionar", description="Adiciona XP Manualmente A Uma Alma ✨")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(member="Membro Que Receberá O XP", amount="Quantidade De XP", reason="Motivo Da Concessão")
-    async def adicionar_xp(self, interaction: discord.Interaction, member: discord.Member, amount: app_commands.Range[int, 1, 10000000], reason: str | None = None) -> None:
         await self._apply_manual_xp(interaction, member, amount, reason)
 
     async def _apply_manual_xp(

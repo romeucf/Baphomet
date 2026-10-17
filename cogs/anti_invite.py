@@ -1,16 +1,16 @@
-﻿import discord
+import discord
 from discord.ext import commands
-from discord import app_commands
 import json
 import os
 import re
 from core.logger import log_exception
+from core.paths import DATA_DIR
 
 
 class AntiInviteCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        self.config_file = "anti_invite_config.json"
+        self.config_file = DATA_DIR / "anti_invite_config.json"
         self.whitelisted_guild_id = 1335048033200635926
         # Regex potente para capturar discord.gg, discord.com/invite, etc.
         self.invite_regex = re.compile(
@@ -21,12 +21,13 @@ class AntiInviteCog(commands.Cog):
 
     def load_config(self):
         if os.path.exists(self.config_file):
-            with open(self.config_file, "r") as f:
+            with open(self.config_file, "r", encoding="utf-8") as f:
                 return json.load(f)
         return {}
 
     def save_config(self):
-        with open(self.config_file, "w") as f:
+        self.config_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.config_file, "w", encoding="utf-8") as f:
             json.dump(self.config, f, indent=4)
 
     # --- COMANDO DE TOGGLE (ADMIN ONLY) ---

@@ -646,6 +646,19 @@ class ServerConfig(app_commands.Group):
     async def server_config_vinculo_relatorio(self, interaction: discord.Interaction) -> None:
         await self._call_cog(interaction, "VinculosCog", "vinculo_relatorio")
 
+    @vinculo_config_group.command(
+        name="restaurar",
+        description="Restaura vínculos a partir do histórico de um canal.",
+    )
+    @app_commands.checks.has_permissions(administrator=True)
+    async def server_config_vinculo_restaurar(
+        self,
+        interaction: discord.Interaction,
+        canal_logs: discord.TextChannel,
+        limite: int = 1000,
+    ) -> None:
+        await self._call_cog(interaction, "VinculosCog", "restaurar_vinculos", canal_logs, limite)
+
     @convites_group.command(
         name="anti_convites",
         description="Sela o servidor contra convites hereges. Bloqueia links de outros reinos.",
@@ -711,17 +724,6 @@ class ServerConfig(app_commands.Group):
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 
-    @limpeza_group.command(
-        name="configurar_limpeza_saida",
-        description="Configura a foice: expurga os rastros deixados por almas que abandonaram o servidor.",
-    )
-    async def limpeza_saida(self, interaction: discord.Interaction, canal: discord.TextChannel) -> None:
-        cog = interaction.client.get_cog("GhostCleanupCog")
-        if cog:
-            await cog.configurar_limpeza_saida(interaction, canal)
-        else:
-            await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
-
     @logs_group.command(
         name="canal_logs",
         description="Define o pergaminho sombrio onde os segredos e ações do servidor serão eternizados.",
@@ -735,28 +737,6 @@ class ServerConfig(app_commands.Group):
         cog = interaction.client.get_cog("DailyLoggerCog")
         if cog:
             await cog.configurar_logs(interaction, canal_destino_id, servidor_origem_id)
-        else:
-            await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
-
-    @denuncias_group.command(
-        name="canal_denuncias",
-        description="Cria um confessionário oculto para que os mortais relatem as heresias ao conselho.",
-    )
-    async def canal_denuncias(self, interaction: discord.Interaction) -> None:
-        cog = interaction.client.get_cog("Denuncia")
-        if cog:
-            await cog.denuncia_chat(interaction)
-        else:
-            await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
-
-    @logs_group.command(
-        name="painel_logs",
-        description="Abre o grimório de registros. Um painel para observar tudo o que rasteja nas sombras.",
-    )
-    async def painel_logs(self, interaction: discord.Interaction) -> None:
-        cog = interaction.client.get_cog("PunishmentLogs")
-        if cog:
-            await cog.setup_logs(interaction)
         else:
             await interaction.response.send_message("Módulo indisponível.", ephemeral=True)
 

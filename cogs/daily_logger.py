@@ -1,20 +1,17 @@
-﻿import asyncio
+import asyncio
 import datetime
 import io
 import logging
-import pathlib
 from zoneinfo import ZoneInfo
 
 import aiosqlite
 import discord
-from discord import app_commands
 from discord.ext import commands, tasks
 from core.logger import log_exception
+from core.paths import DATA_DIR
 
 
 # Constantes do módulo
-DATA_DIR = pathlib.Path("data")
-DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "daily_logs.sqlite3"
 
 LOGGER = logging.getLogger("baphomet.daily_logger")
@@ -24,6 +21,7 @@ class DailyLoggerCog(commands.Cog):
         self.bot = bot
         self._db: aiosqlite.Connection | None = None
         self._lock = asyncio.Lock()
+        self._message_buffer: list[tuple[int, str, str, str, str]] = []
 
     async def cog_load(self) -> None:
         """Inicia a conexão com o BD e inicializa o loop."""
@@ -54,14 +52,44 @@ class DailyLoggerCog(commands.Cog):
         await self._db.execute("CREATE INDEX IF NOT EXISTS idx_log_messages_guild ON logger_messages(guild_id)")
         await self._db.commit()
         
+        self.flush_buffer_task.start()
         self.daily_log_task.start()
         LOGGER.info("Daily Global Logging inicializado.")
 
     async def cog_unload(self) -> None:
         """Encerra a conexão segura e cancela a task."""
+        self.flush_buffer_task.cancel()
         self.daily_log_task.cancel()
+        await self._flush_buffer()
         if self._db:
             await self._db.close()
+
+    async def _flush_buffer(self) -> None:
+        """Descarrega todas as mensagens acumuladas em memória em uma única transação SQLite."""
+        if not self._db or not self._message_buffer:
+            return
+        async with self._lock:
+            if not self._message_buffer:
+                return
+            batch = self._message_buffer[:]
+            self._message_buffer.clear()
+            try:
+                await self._db.executemany(
+                    "INSERT INTO logger_messages (guild_id, channel_name, author_name, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                    batch,
+                )
+                await self._db.commit()
+            except Exception as e:
+                log_exception(e)
+                LOGGER.error(f"Erro ao gravar lote de mensagens no DB de logs: {e}")
+
+    @tasks.loop(seconds=30)
+    async def flush_buffer_task(self) -> None:
+        await self._flush_buffer()
+
+    @flush_buffer_task.before_loop
+    async def before_flush_buffer_task(self) -> None:
+        await self.bot.wait_until_ready()
 
     # =========================================================
     # COMANDO DE CONFIGURAÇÃO (Admin-Only)
@@ -129,7 +157,7 @@ class DailyLoggerCog(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     # =========================================================
-    # MOTOR DE CAPTURA (Assíncrono e Otimizado)
+    # MOTOR DE CAPTURA (Assíncrono e Otimizado com Batching)
     # =========================================================
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -148,17 +176,7 @@ class DailyLoggerCog(commands.Cog):
         # Timestamp de Brasília isolado para o momento da captura
         now_brt = datetime.datetime.now(ZoneInfo("America/Sao_Paulo")).strftime("%Y-%m-%d %H:%M:%S")
 
-        try:
-            # Não usa 'commit' constante em on_message para não criar gargalo de I/O em servidores lotados.
-            # Graças ao WAL mode as inserções são extremamente rápidas.
-            await self._db.execute(
-                "INSERT INTO logger_messages (guild_id, channel_name, author_name, content, created_at) VALUES (?, ?, ?, ?, ?)",
-                (guild_id, channel_name, author_name, content, now_brt)
-            )
-            await self._db.commit()
-        except Exception as e:
-            log_exception(e)
-            LOGGER.error(f"Erro ao inserir mensagem no DB de logs: {e}")
+        self._message_buffer.append((guild_id, channel_name, author_name, content, now_brt))
 
     # =========================================================
     # O AGENDADOR DE TAREFAS (00:00 BRT)
@@ -169,6 +187,8 @@ class DailyLoggerCog(commands.Cog):
         LOGGER.info("Iniciando rotina de Daily Global Logging...")
         if not self._db:
             return
+
+        await self._flush_buffer()
 
         # Recupera todas as configurações
         configs = await self._db.execute_fetchall("SELECT guild_id, target_channel_id FROM logger_config")

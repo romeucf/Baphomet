@@ -1,7 +1,7 @@
 $ErrorActionPreference = "Stop"
 Write-Host "Criando arquivo ZIP para deploy na Square Cloud..." -ForegroundColor Cyan
 
-$exclude = @('.git', '__pycache__', '.venv', 'Baphomet-deploy.zip', 'env', '.env', 'data', 'build_deploy_zip.ps1', '.agents', '.pytest_cache')
+$exclude = @('.git', '__pycache__', '.venv', 'env', '.env', '.cache', '.spotify_cache', 'tests', 'docs', 'data', 'logs', '*.zip', '*.db', '*.sqlite3', 'build_deploy_zip.ps1', '.agents', '.pytest_cache')
 
 if (Test-Path "Baphomet-deploy.zip") {
     Remove-Item "Baphomet-deploy.zip" -Force

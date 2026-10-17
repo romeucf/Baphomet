@@ -10,14 +10,14 @@ from discord import app_commands
 from discord.ext import commands
 from PIL import Image
 
-import cogs.whitetext.commands as whitetext_commands
-from cogs.whitetext.commands import (
+import cogs.whitetext as whitetext_commands
+from cogs.whitetext import (
     MAX_OUTPUT_BYTES,
     WhiteTextCog,
     classify_attachment,
     process_media_bytes,
 )
-from cogs.whitetext.errors import (
+from modules.media_processing.whitetext.errors import (
     FFmpegNotFoundError,
     FontNotFoundError,
     ImageTooLargeError,
@@ -31,9 +31,9 @@ from cogs.whitetext.errors import (
     VideoTooLargeError,
     VideoTooLongError,
 )
-from cogs.whitetext.layout import CaptionStyle
-from cogs.whitetext.processor import MediaKind, WhiteTextProcessorConfig
-from cogs.whitetext.video import VideoProcessingConfig
+from modules.media_processing.whitetext.layout import CaptionStyle
+from modules.media_processing.whitetext.processor import MediaKind, WhiteTextProcessorConfig
+from modules.media_processing.whitetext.video import VideoProcessingConfig
 
 
 def image_bytes(format_name: str = "PNG", *, size: tuple[int, int] = (120, 80)) -> bytes:

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import io
 import json
@@ -12,10 +12,7 @@ from typing import TYPE_CHECKING
 
 from modules.media_processing.whitetext.errors import FFmpegNotFoundError, InvalidVideoError, OutputTooLargeError, VideoProcessingError, VideoTooLargeError
 from modules.media_processing.whitetext.layout import CaptionStyle
-
-
-if TYPE_CHECKING:
-    from modules.media_processing.whitetext.processor import WhiteTextProcessorConfig
+from modules.media_processing.whitetext.processor import WhiteTextProcessorConfig
 
 
 LOGGER = logging.getLogger("baphomet.whitetext.video")
@@ -195,7 +192,7 @@ def process_video_bytes_to_captioned_gif(
 ) -> tuple[io.BytesIO, str]:
     """Convert video bytes to GIF, then apply the whitetext GIF pipeline."""
 
-    from modules.media_processing.whitetext.processor import WhiteTextProcessorConfig, process_gif_bytes
+    from modules.media_processing.whitetext.processor import process_gif_bytes
 
     intermediate = convert_video_to_gif_bytes(video_data, video_config)
     gif_config = processor_config if isinstance(processor_config, WhiteTextProcessorConfig) else WhiteTextProcessorConfig()

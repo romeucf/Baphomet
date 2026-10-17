@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 from typing import Any
@@ -198,12 +198,7 @@ class TierAssetRepository:
             SELECT a.*
             FROM tier_assets a
             WHERE a.deleted_at IS NULL
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM tier_template_items i
-                  WHERE i.asset_id = a.id
-                    AND i.deleted_at IS NULL
-              )
+              AND a.marked_orphan_at IS NOT NULL
             ORDER BY a.created_at ASC
             LIMIT ?
             """,
@@ -214,17 +209,6 @@ class TierAssetRepository:
     async def soft_delete_asset(self, asset_id: str) -> TierAsset:
         now = utc_now_iso()
         async with self.db.immediate_transaction() as conn:
-            refs = await fetch_one(
-                conn,
-                """
-                SELECT COUNT(*) AS total
-                FROM tier_template_items
-                WHERE asset_id = ? AND deleted_at IS NULL
-                """,
-                (asset_id,),
-            )
-            if int(refs["total"]) > 0:
-                raise ValueError("Asset ainda está referenciado por itens de template.")
             cursor = await conn.execute(
                 """
                 UPDATE tier_assets

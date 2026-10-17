@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import contextlib
 import inspect
 import logging
-import sqlite3
 from pathlib import Path
 from typing import Callable, Awaitable, Any
 
+import aiosqlite
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+from core.paths import DATA_DIR
 
 
 LOGGER = logging.getLogger("baphomet.blacklist")
@@ -27,16 +30,16 @@ class BlacklistCog(commands.Cog):
 
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        self.db_file = Path("blacklist.db")
-        self.blacklisted_channels: set[int] = set()
+        self.db_file: Path = DATA_DIR / "blacklist.sqlite3"
+        self._blacklisted_channels: set[int] = set()
+        self.blacklisted_channels = self._blacklisted_channels
 
         self._prefix_check = self._global_prefix_check
         self._original_tree_interaction_check: Callable[..., Any] | None = None
         self._patched_tree_interaction_check: Callable[..., Awaitable[bool]] | None = None
 
-        self._init_db()
-
     async def cog_load(self) -> None:
+        await self._init_db()
         self.bot.add_check(self._prefix_check)
         self._patch_app_command_check()
 
@@ -44,42 +47,44 @@ class BlacklistCog(commands.Cog):
         self.bot.remove_check(self._prefix_check)
         self._restore_app_command_check()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_file, timeout=5)
-        conn.execute("PRAGMA journal_mode = WAL")
-        conn.execute("PRAGMA synchronous = NORMAL")
-        return conn
-
-    def _init_db(self) -> None:
-        """Inicializa o banco e carrega os canais bloqueados para o cache."""
-        with self._connect() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
+    async def _init_db(self) -> None:
+        """Inicializa o banco de forma assíncrona e carrega os canais bloqueados para o cache."""
+        self.db_file.parent.mkdir(parents=True, exist_ok=True)
+        async with aiosqlite.connect(str(self.db_file), timeout=5) as db:
+            await db.execute("PRAGMA journal_mode = WAL")
+            await db.execute("PRAGMA synchronous = NORMAL")
+            await db.execute(
                 """
                 CREATE TABLE IF NOT EXISTS blacklist (
                     channel_id INTEGER PRIMARY KEY
                 )
                 """
             )
-            cursor.execute("SELECT channel_id FROM blacklist")
-            self.blacklisted_channels = {int(row[0]) for row in cursor.fetchall()}
-            conn.commit()
+            async with db.execute("SELECT channel_id FROM blacklist") as cursor:
+                rows = await cursor.fetchall()
+            self._blacklisted_channels.clear()
+            self._blacklisted_channels.update(int(row[0]) for row in rows)
+            await db.commit()
 
-    def _adicionar_ao_banco(self, channel_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute(
+    async def _adicionar_ao_banco(self, channel_id: int) -> None:
+        async with aiosqlite.connect(str(self.db_file), timeout=5) as db:
+            await db.execute("PRAGMA journal_mode = WAL")
+            await db.execute("PRAGMA synchronous = NORMAL")
+            await db.execute(
                 "INSERT OR IGNORE INTO blacklist (channel_id) VALUES (?)",
                 (channel_id,),
             )
-            conn.commit()
+            await db.commit()
 
-    def _remover_do_banco(self, channel_id: int) -> None:
-        with self._connect() as conn:
-            conn.execute(
+    async def _remover_do_banco(self, channel_id: int) -> None:
+        async with aiosqlite.connect(str(self.db_file), timeout=5) as db:
+            await db.execute("PRAGMA journal_mode = WAL")
+            await db.execute("PRAGMA synchronous = NORMAL")
+            await db.execute(
                 "DELETE FROM blacklist WHERE channel_id = ?",
                 (channel_id,),
             )
-            conn.commit()
+            await db.commit()
 
     def _is_management_prefix_command(self, ctx: commands.Context) -> bool:
         if ctx.command is None:
@@ -218,7 +223,7 @@ class BlacklistCog(commands.Cog):
             return
 
         self.blacklisted_channels.add(canal.id)
-        self._adicionar_ao_banco(canal.id)
+        await self._adicionar_ao_banco(canal.id)
 
         await self._send_ctx(
             ctx,
@@ -241,7 +246,7 @@ class BlacklistCog(commands.Cog):
             return
 
         self.blacklisted_channels.remove(canal.id)
-        self._remover_do_banco(canal.id)
+        await self._remover_do_banco(canal.id)
 
         await self._send_ctx(
             ctx,

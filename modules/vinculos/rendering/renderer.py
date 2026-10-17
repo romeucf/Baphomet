@@ -1,10 +1,9 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import io
 import logging
 import random
-import secrets
 import unicodedata
 from dataclasses import dataclass
 from threading import Lock

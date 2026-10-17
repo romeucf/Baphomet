@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import asyncio
 import logging
@@ -9,9 +9,9 @@ from typing import Optional
 
 import aiosqlite
 import discord
-from discord import app_commands
 from discord.ext import commands
 from core.logger import log_exception
+from core.paths import DATA_DIR
 
 
 logger = logging.getLogger(__name__)
@@ -50,7 +50,7 @@ class PunishmentLogs(commands.Cog):
     trata como kick; se não houver, assume que foi saída voluntária e não loga.
     """
 
-    def __init__(self, bot: commands.Bot, db_path: str = "data/punishment_logs.db") -> None:
+    def __init__(self, bot: commands.Bot, db_path: str | Path = DATA_DIR / "punishment_logs.sqlite3") -> None:
         self.bot = bot
         self.db_path = Path(db_path)
         self.db_lock = asyncio.Lock()
@@ -153,16 +153,9 @@ class PunishmentLogs(commands.Cog):
         return channel
 
     # =========================
-    # slash command /logs setup
+    # método /server_config logs setup
     # =========================
 
-    @app_commands.command(name="setup", description="define o canal e ativa/desativa os logs de punições")
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    @app_commands.describe(
-        channel="canal onde os logs serão enviados",
-        status="true para ativar, false para desativar",
-    )
     async def setup_logs(
         self,
         interaction: discord.Interaction,
@@ -645,4 +638,4 @@ class PunishmentLogs(commands.Cog):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(PunishmentLogs(bot))
-    bot.tree.remove_command("setup")
+

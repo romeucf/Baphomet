@@ -4,18 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import pathlib
 from datetime import datetime, timezone
 
 import aiosqlite
 import discord
 from discord import app_commands
 from discord.ext import commands
+from core.paths import DATA_DIR
 
 LOGGER = logging.getLogger("baphomet.ghost_cleanup")
 
-DATA_DIR = pathlib.Path("data")
-DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "ghost_cleanup.sqlite3"
 
 

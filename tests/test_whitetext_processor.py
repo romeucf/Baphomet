@@ -5,9 +5,9 @@ import unittest
 
 from PIL import Image
 
-from cogs.whitetext.errors import ImageTooLargeError, InvalidImageError, InvalidTextError, LayoutComputationError, OutputTooLargeError, WhitetextUnsupportedMediaError
-from cogs.whitetext.layout import CaptionStyle, compute_caption_layout
-from cogs.whitetext.processor import (
+from modules.media_processing.whitetext.errors import ImageTooLargeError, InvalidImageError, InvalidTextError, LayoutComputationError, OutputTooLargeError, WhitetextUnsupportedMediaError
+from modules.media_processing.whitetext.layout import CaptionStyle, compute_caption_layout
+from modules.media_processing.whitetext.processor import (
     MediaKind,
     WhiteTextProcessorConfig,
     detect_image_format,

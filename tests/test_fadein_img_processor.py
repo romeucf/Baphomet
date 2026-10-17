@@ -5,13 +5,13 @@ import unittest
 
 from PIL import Image, features
 
-from cogs.fadein_img.errors import (
+from modules.media_processing.fadein_img.errors import (
     AnimatedImageNotSupportedError,
     ImageTooLargeError,
     InvalidImageError,
     OutputTooLargeError,
 )
-from cogs.fadein_img.processor import (
+from modules.media_processing.fadein_img.processor import (
     FadeInImageConfig,
     build_fadein_frames,
     open_and_validate_static_image,

@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
@@ -6,13 +6,13 @@ from typing import TYPE_CHECKING
 import discord
 
 from modules.iceberg.models import IcebergProject, ItemConfig, ItemSourceType
-from .sources.providers import IcebergUserError
+from modules.iceberg.sources.providers import IcebergUserError
 from modules.iceberg.themes import default_layer_name
 from core.logger import log_exception
 
 
 if TYPE_CHECKING:
-    from .commands import IcebergCog
+    from cogs.iceberg import IcebergCog
 
 
 LOGGER = logging.getLogger("baphomet.iceberg.views")
@@ -179,8 +179,6 @@ class IcebergWikipediaCandidateSelect(discord.ui.Select):
             return
 
         try:
-            from modules.iceberg.models import ItemSourceType
-
             project = await self.parent_view.cog.service.add_item(
                 self.parent_view.project_id,
                 owner_id=self.parent_view.owner_id,

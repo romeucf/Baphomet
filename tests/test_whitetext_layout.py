@@ -6,8 +6,8 @@ from unittest.mock import patch
 
 from PIL import Image, ImageDraw
 
-from cogs.whitetext.errors import FontNotFoundError, InvalidTextError, LayoutComputationError, TextTooLongError
-from cogs.whitetext.layout import (
+from modules.media_processing.whitetext.errors import FontNotFoundError, InvalidTextError, LayoutComputationError, TextTooLongError
+from modules.media_processing.whitetext.layout import (
     CaptionStyle,
     compute_caption_layout,
     compute_responsive_font_size,

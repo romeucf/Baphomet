@@ -4,6 +4,8 @@ from pathlib import Path
 
 from PIL import ImageFont
 
+from core.paths import FONTS_DIR
+
 
 class FontAssetError(RuntimeError):
     """Erro claro para execucoes que exigem fontes locais estritas."""
@@ -21,9 +23,8 @@ class FontManager:
     }
 
     def __init__(self, *, strict: bool = False, font_dirs: tuple[Path, ...] | None = None) -> None:
-        project_root = Path(__file__).resolve().parents[2]
         self.strict = strict
-        self.font_dirs = font_dirs or (project_root / "assets" / "fonts",)
+        self.font_dirs = font_dirs or (FONTS_DIR,)
         self._cache: dict[tuple[str, int], ImageFont.ImageFont] = {}
 
     def font(self, size: int, weight: str = "regular") -> ImageFont.ImageFont:

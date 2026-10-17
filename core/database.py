@@ -9,11 +9,12 @@ from typing import Any, AsyncIterator, Final
 
 import aiosqlite
 
+from core.paths import DATA_DIR
+
 
 LOGGER = logging.getLogger("baphomet.motd_db")
 
-_PROJECT_DIR = Path(__file__).resolve().parent
-_DEFAULT_DB_PATH = _PROJECT_DIR / "data" / "filme_do_dia.sqlite3"
+_DEFAULT_DB_PATH = DATA_DIR / "filme_do_dia.sqlite3"
 
 
 DEFAULT_SCHEDULE_TIME: Final[str] = "18:00"

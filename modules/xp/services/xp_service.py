@@ -580,6 +580,39 @@ class XpService:
         new_progress = build_progress_snapshot(new_total, config.difficulty)
         return XpChangeResult(True, None, old_total, new_total, old_progress.level, new_progress.level, max(0, new_progress.level - old_progress.level), abs(amount))
 
+    async def remove_xp(
+        self,
+        guild: discord.Guild | int,
+        member: discord.Member | discord.User | int,
+        amount: int,
+        actor_user_id: int | None = None,
+        reason: str | None = None,
+    ) -> XpChangeResult:
+        guild_id = guild if isinstance(guild, int) else guild.id
+        user_id = member if isinstance(member, int) else member.id
+        display_name = getattr(member, "display_name", str(user_id))
+        config = await self.get_guild_config(guild_id)
+        old_total, new_total = await self.repository.adjust_xp(
+            guild_id=guild_id,
+            user_id=user_id,
+            delta_xp=-abs(amount),
+            last_known_name=display_name,
+            actor_user_id=actor_user_id,
+            reason=reason,
+        )
+        old_progress = build_progress_snapshot(old_total, config.difficulty)
+        new_progress = build_progress_snapshot(new_total, config.difficulty)
+        return XpChangeResult(
+            True,
+            None,
+            old_total,
+            new_total,
+            old_progress.level,
+            new_progress.level,
+            new_progress.level - old_progress.level,
+            new_total - old_total,
+        )
+
     async def reset_guild_xp(self, guild: discord.Guild, actor_user_id: int) -> int:
         """Apaga os perfis de XP de toda a guild."""
         deleted_count = await self.repository.reset_guild_xp(guild.id, actor_user_id)
